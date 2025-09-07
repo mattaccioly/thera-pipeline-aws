@@ -1,0 +1,256 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'AMS Job Lambda Function for Challenge Scoring Metrics'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Environment name
+  
+  CuratedBucket:
+    Type: String
+    Description: S3 bucket for curated data storage
+    Default: thera-curated
+  
+  MetricsBucket:
+    Type: String
+    Description: S3 bucket for metrics storage
+    Default: thera-metrics
+  
+  AthenaDatabase:
+    Type: String
+    Description: Athena database name
+    Default: thera_analytics
+  
+  AthenaWorkgroup:
+    Type: String
+    Description: Athena workgroup name
+    Default: primary
+  
+  DaysLookback:
+    Type: Number
+    Default: 1
+    Description: Number of days to look back for data
+    MinValue: 1
+    MaxValue: 30
+
+Resources:
+  # IAM Role for Lambda
+  AMSJobRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Environment}-ams-job-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: AMSJobPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # S3 permissions
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::${CuratedBucket}/*'
+                  - !Sub 'arn:aws:s3:::${MetricsBucket}/*'
+                  - !Sub 'arn:aws:s3:::${CuratedBucket}'
+                  - !Sub 'arn:aws:s3:::${MetricsBucket}'
+              
+              # Athena permissions
+              - Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:StopQueryExecution
+                  - athena:GetWorkGroup
+                Resource: '*'
+              
+              # Glue permissions
+              - Effect: Allow
+                Action:
+                  - glue:CreateTable
+                  - glue:UpdateTable
+                  - glue:GetTable
+                  - glue:GetTables
+                  - glue:GetDatabase
+                  - glue:GetDatabases
+                Resource: '*'
+              
+              # CloudWatch permissions
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+
+  # Lambda Function
+  AMSJobFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${Environment}-ams-job'
+      CodeUri: .
+      Handler: lambda-ams-job.lambda_handler
+      Runtime: python3.12
+      Timeout: 900  # 15 minutes
+      MemorySize: 1024
+      Environment:
+        Variables:
+          CURATED_BUCKET: !Ref CuratedBucket
+          METRICS_BUCKET: !Ref MetricsBucket
+          ATHENA_DATABASE: !Ref AthenaDatabase
+          ATHENA_WORKGROUP: !Ref AthenaWorkgroup
+          DAYS_LOOKBACK: !Ref DaysLookback
+          AWS_REGION: !Ref AWS::Region
+      Role: !GetAtt AMSJobRole.Arn
+      Events:
+        # Daily trigger
+        DailyTrigger:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 15 * * ? *)  # Daily at 3 PM UTC
+            Name: !Sub '${Environment}-ams-job-daily-trigger'
+            Description: 'Daily trigger for AMS job'
+            Enabled: true
+      Tags:
+        Environment: !Ref Environment
+        Service: thera-pipeline
+        Component: ams-job
+
+  # CloudWatch Log Group
+  AMSJobLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${Environment}-ams-job'
+      RetentionInDays: 14
+
+  # S3 Bucket for metrics (if not exists)
+  MetricsBucketResource:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref MetricsBucket
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: thera-pipeline
+        - Key: Component
+          Value: metrics-storage
+
+  # CloudWatch Alarms
+  AMSJobErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-ams-job-errors'
+      AlarmDescription: 'AMS Job Lambda errors'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref AMSJobFunction
+      TreatMissingData: notBreaching
+
+  AMSJobDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-ams-job-duration'
+      AlarmDescription: 'AMS Job Lambda duration too high'
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 600000  # 10 minutes in milliseconds
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref AMSJobFunction
+      TreatMissingData: notBreaching
+
+  # Custom metrics for business logic
+  AMSJobLowScoreAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-ams-job-low-score'
+      AlarmDescription: 'Average AMS score is low'
+      MetricName: AverageAMS
+      Namespace: TheraPipeline/AMSJob
+      Statistic: Average
+      Period: 3600  # 1 hour
+      EvaluationPeriods: 1
+      Threshold: 0.3
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+
+  AMSJobNoDataAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-ams-job-no-data'
+      AlarmDescription: 'No shortlist data found for AMS job'
+      MetricName: TotalShortlists
+      Namespace: TheraPipeline/AMSJob
+      Statistic: Sum
+      Period: 3600  # 1 hour
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+
+Outputs:
+  AMSJobFunctionArn:
+    Description: 'ARN of the AMS Job Lambda function'
+    Value: !GetAtt AMSJobFunction.Arn
+    Export:
+      Name: !Sub '${Environment}-AMSJobFunctionArn'
+  
+  AMSJobRoleArn:
+    Description: 'ARN of the AMS Job IAM role'
+    Value: !GetAtt AMSJobRole.Arn
+    Export:
+      Name: !Sub '${Environment}-AMSJobRoleArn'
+  
+  MetricsBucketName:
+    Description: 'Name of the metrics S3 bucket'
+    Value: !Ref MetricsBucketResource
+    Export:
+      Name: !Sub '${Environment}-MetricsBucketName'
+  
+  MetricsBucketArn:
+    Description: 'ARN of the metrics S3 bucket'
+    Value: !GetAtt MetricsBucketResource.Arn
+    Export:
+      Name: !Sub '${Environment}-MetricsBucketArn'

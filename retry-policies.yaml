@@ -1,0 +1,151 @@
+# Retry Policies Configuration for Thera Pipeline
+# This file defines standard retry policies that can be applied across all components
+
+# Standard Retry Policies
+retry_policies:
+  # For Lambda functions with transient errors
+  lambda_standard:
+    error_equals:
+      - "Lambda.ServiceException"
+      - "Lambda.AWSLambdaException"
+      - "Lambda.SdkClientException"
+      - "States.TaskFailed"
+    interval_seconds: 2
+    max_attempts: 3
+    backoff_rate: 2.0
+
+  # For Lambda functions with longer processing times
+  lambda_long_running:
+    error_equals:
+      - "Lambda.ServiceException"
+      - "Lambda.AWSLambdaException"
+      - "Lambda.SdkClientException"
+      - "States.TaskFailed"
+    interval_seconds: 5
+    max_attempts: 3
+    backoff_rate: 2.0
+
+  # For Athena queries
+  athena_queries:
+    error_equals:
+      - "States.TaskFailed"
+      - "Athena.QueryFailed"
+    interval_seconds: 10
+    max_attempts: 2
+    backoff_rate: 2.0
+
+  # For S3 operations
+  s3_operations:
+    error_equals:
+      - "S3.AccessDenied"
+      - "S3.NoSuchBucket"
+      - "S3.NoSuchKey"
+    interval_seconds: 3
+    max_attempts: 3
+    backoff_rate: 2.0
+
+  # For DynamoDB operations
+  dynamodb_operations:
+    error_equals:
+      - "DynamoDB.ProvisionedThroughputExceededException"
+      - "DynamoDB.ThrottlingException"
+    interval_seconds: 2
+    max_attempts: 5
+    backoff_rate: 2.0
+
+  # For API calls (Apollo, Firecrawl)
+  api_calls:
+    error_equals:
+      - "States.TaskFailed"
+      - "API.RateLimitExceeded"
+      - "API.Timeout"
+    interval_seconds: 5
+    max_attempts: 3
+    backoff_rate: 2.0
+
+  # For ML operations
+  ml_operations:
+    error_equals:
+      - "States.TaskFailed"
+      - "ML.TrainingFailed"
+      - "ML.InsufficientData"
+    interval_seconds: 10
+    max_attempts: 2
+    backoff_rate: 2.0
+
+# Error Handling Strategies
+error_handling:
+  # Critical errors that should stop the pipeline
+  critical_errors:
+    - "ApolloDeltaPullFailure"
+    - "AthenaCTASBronzeSilverFailure"
+    - "DomainHealthGateFailure"
+    - "FirecrawlOrchestratorFailure"
+    - "AthenaCTASSilverGoldFailure"
+    - "EmbeddingsBatchFailure"
+    - "AMSComputationFailure"
+    - "DynamoDBPublisherFailure"
+    - "MLTrainingFailure"
+    - "EvaluationMetricsFailure"
+
+  # Non-critical errors that can be logged but don't stop the pipeline
+  non_critical_errors:
+    - "DataQualityWarning"
+    - "PerformanceWarning"
+    - "ResourceLimitWarning"
+
+  # Errors that should trigger alerts
+  alert_errors:
+    - "HighErrorRate"
+    - "ExecutionTimeout"
+    - "ResourceExhaustion"
+    - "DataCorruption"
+
+# Timeout Configurations
+timeouts:
+  # Lambda function timeouts (in seconds)
+  lambda_functions:
+    apollo_delta_pull: 900      # 15 minutes
+    athena_ctas_bronze_silver: 1800  # 30 minutes
+    domain_health_gate: 900     # 15 minutes
+    firecrawl_orchestrator: 900 # 15 minutes
+    athena_ctas_silver_gold: 2700   # 45 minutes
+    embeddings_batch: 900       # 15 minutes
+    ams_computation: 900        # 15 minutes
+    dynamodb_publisher: 900     # 15 minutes
+    ml_training: 1800           # 30 minutes
+    evaluation_metrics: 900     # 15 minutes
+
+  # Step Functions timeouts (in seconds)
+  step_functions:
+    daily_pipeline: 7200        # 2 hours
+    weekly_pipeline: 3600       # 1 hour
+
+  # API call timeouts (in seconds)
+  api_calls:
+    apollo_api: 30
+    firecrawl_api: 60
+    bedrock_api: 30
+
+# Monitoring and Alerting
+monitoring:
+  # CloudWatch metrics to track
+  metrics:
+    - "ErrorRate"
+    - "ExecutionTime"
+    - "SuccessRate"
+    - "ResourceUtilization"
+    - "DataQualityScore"
+
+  # Alarm thresholds
+  alarms:
+    error_rate_threshold: 0.1      # 10%
+    execution_time_threshold: 3600 # 1 hour
+    success_rate_threshold: 0.9    # 90%
+    resource_utilization_threshold: 0.8 # 80%
+
+  # Log retention (in days)
+  log_retention:
+    application_logs: 30
+    error_logs: 90
+    audit_logs: 365

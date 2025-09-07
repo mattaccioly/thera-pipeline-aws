@@ -1,0 +1,373 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Firecrawl Orchestrator Lambda Function with Step Functions and SQS Support'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Environment name
+  
+  RawBucket:
+    Type: String
+    Description: S3 bucket for raw data storage
+    Default: thera-raw
+  
+  CuratedBucket:
+    Type: String
+    Description: S3 bucket for curated data storage
+    Default: thera-curated
+  
+  AthenaDatabase:
+    Type: String
+    Description: Athena database name
+    Default: thera_analytics
+  
+  AthenaWorkgroup:
+    Type: String
+    Description: Athena workgroup name
+    Default: primary
+  
+  FirecrawlSecretName:
+    Type: String
+    Description: Secrets Manager secret name for Firecrawl API key
+    Default: thera/firecrawl/api-key
+  
+  MaxConcurrency:
+    Type: Number
+    Default: 2
+    Description: Maximum concurrent domain crawls
+    MinValue: 1
+    MaxValue: 10
+  
+  CircuitBreakerThreshold:
+    Type: Number
+    Default: 5
+    Description: Number of failures before circuit breaker opens
+    MinValue: 1
+    MaxValue: 20
+  
+  CircuitBreakerTimeout:
+    Type: Number
+    Default: 300
+    Description: Circuit breaker timeout in seconds
+    MinValue: 60
+    MaxValue: 3600
+
+Resources:
+  # IAM Role for Lambda
+  FirecrawlOrchestratorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Environment}-firecrawl-orchestrator-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: FirecrawlOrchestratorPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # S3 permissions
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${RawBucket}/*'
+                  - !Sub 'arn:aws:s3:::${CuratedBucket}/*'
+              
+              # Athena permissions
+              - Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:StopQueryExecution
+                  - athena:GetWorkGroup
+                Resource: '*'
+              
+              # Secrets Manager permissions
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${FirecrawlSecretName}*'
+              
+              # Step Functions permissions
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                  - states:DescribeExecution
+                  - states:StopExecution
+                Resource: '*'
+              
+              # SQS permissions
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:SendMessageBatch
+                  - sqs:GetQueueAttributes
+                Resource: '*'
+              
+              # CloudWatch permissions
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+
+  # Lambda Function
+  FirecrawlOrchestratorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${Environment}-firecrawl-orchestrator'
+      CodeUri: .
+      Handler: lambda-firecrawl-orchestrator.lambda_handler
+      Runtime: python3.12
+      Timeout: 900  # 15 minutes
+      MemorySize: 1024
+      ReservedConcurrencyLimit: !Ref MaxConcurrency
+      Environment:
+        Variables:
+          RAW_BUCKET: !Ref RawBucket
+          CURATED_BUCKET: !Ref CuratedBucket
+          ATHENA_DATABASE: !Ref AthenaDatabase
+          ATHENA_WORKGROUP: !Ref AthenaWorkgroup
+          FIRECRAWL_SECRET_NAME: !Ref FirecrawlSecretName
+          MAX_CONCURRENCY: !Ref MaxConcurrency
+          CIRCUIT_BREAKER_THRESHOLD: !Ref CircuitBreakerThreshold
+          CIRCUIT_BREAKER_TIMEOUT: !Ref CircuitBreakerTimeout
+          AWS_REGION: !Ref AWS::Region
+      Role: !GetAtt FirecrawlOrchestratorRole.Arn
+      Events:
+        # Can be triggered by EventBridge, SQS, or direct invocation
+        EventBridgeTrigger:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 10 * * ? *)  # Daily at 10 AM UTC
+            Name: !Sub '${Environment}-firecrawl-daily-trigger'
+            Description: 'Daily trigger for Firecrawl orchestration'
+            Enabled: false  # Disabled by default, enable as needed
+      Tags:
+        Environment: !Ref Environment
+        Service: thera-pipeline
+        Component: firecrawl-orchestrator
+
+  # CloudWatch Log Group
+  FirecrawlOrchestratorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${Environment}-firecrawl-orchestrator'
+      RetentionInDays: 14
+
+  # SQS Queue for domain processing
+  FirecrawlQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${Environment}-firecrawl-queue'
+      VisibilityTimeoutSeconds: 900  # 15 minutes
+      MessageRetentionPeriod: 1209600  # 14 days
+      ReceiveMessageWaitTimeSeconds: 20  # Long polling
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt FirecrawlDLQ.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: thera-pipeline
+        - Key: Component
+          Value: firecrawl-orchestrator
+
+  # Dead Letter Queue
+  FirecrawlDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${Environment}-firecrawl-dlq'
+      MessageRetentionPeriod: 1209600  # 14 days
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: thera-pipeline
+        - Key: Component
+          Value: firecrawl-dlq
+
+  # SQS Event Source Mapping for processing individual domains
+  FirecrawlSQSEventSource:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt FirecrawlQueue.Arn
+      FunctionName: !Ref FirecrawlOrchestratorFunction
+      BatchSize: 1
+      MaximumBatchingWindowInSeconds: 5
+      Enabled: false  # Disabled by default, enable as needed
+
+  # Step Functions State Machine for Firecrawl processing
+  FirecrawlStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub '${Environment}-firecrawl-state-machine'
+      RoleArn: !GetAtt FirecrawlStepFunctionsRole.Arn
+      DefinitionString: !Sub |
+        {
+          "Comment": "Firecrawl domain processing state machine",
+          "StartAt": "ProcessDomains",
+          "States": {
+            "ProcessDomains": {
+              "Type": "Map",
+              "ItemsPath": "$.domains",
+              "MaxConcurrency": ${MaxConcurrency},
+              "Iterator": {
+                "StartAt": "CrawlDomain",
+                "States": {
+                  "CrawlDomain": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::lambda:invoke",
+                    "Parameters": {
+                      "FunctionName": "${FirecrawlOrchestratorFunction}",
+                      "Payload": {
+                        "domain.$": "$",
+                        "use_step_functions": false,
+                        "use_sqs": false
+                      }
+                    },
+                    "End": true,
+                    "Retry": [
+                      {
+                        "ErrorEquals": ["States.ALL"],
+                        "IntervalSeconds": 2,
+                        "MaxAttempts": 3,
+                        "BackoffRate": 2.0
+                      }
+                    ],
+                    "Catch": [
+                      {
+                        "ErrorEquals": ["States.ALL"],
+                        "Next": "HandleError",
+                        "ResultPath": "$.error"
+                      }
+                    ]
+                  },
+                  "HandleError": {
+                    "Type": "Pass",
+                    "Result": "Error handled",
+                    "End": true
+                  }
+                }
+              },
+              "End": true
+            }
+          }
+        }
+
+  # IAM Role for Step Functions
+  FirecrawlStepFunctionsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Environment}-firecrawl-step-functions-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FirecrawlStepFunctionsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt FirecrawlOrchestratorFunction.Arn
+
+  # CloudWatch Alarms
+  FirecrawlOrchestratorErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-firecrawl-orchestrator-errors'
+      AlarmDescription: 'Firecrawl Orchestrator Lambda errors'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref FirecrawlOrchestratorFunction
+      TreatMissingData: notBreaching
+
+  FirecrawlOrchestratorDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-firecrawl-orchestrator-duration'
+      AlarmDescription: 'Firecrawl Orchestrator Lambda duration too high'
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 600000  # 10 minutes in milliseconds
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref FirecrawlOrchestratorFunction
+      TreatMissingData: notBreaching
+
+  # Custom metrics for business logic
+  FirecrawlFailureRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-firecrawl-failure-rate-high'
+      AlarmDescription: 'Firecrawl failure rate is high'
+      MetricName: FailedCrawls
+      Namespace: TheraPipeline/Firecrawl
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+  FirecrawlOrchestratorFunctionArn:
+    Description: 'ARN of the Firecrawl Orchestrator Lambda function'
+    Value: !GetAtt FirecrawlOrchestratorFunction.Arn
+    Export:
+      Name: !Sub '${Environment}-FirecrawlOrchestratorFunctionArn'
+  
+  FirecrawlOrchestratorRoleArn:
+    Description: 'ARN of the Firecrawl Orchestrator IAM role'
+    Value: !GetAtt FirecrawlOrchestratorRole.Arn
+    Export:
+      Name: !Sub '${Environment}-FirecrawlOrchestratorRoleArn'
+  
+  FirecrawlQueueUrl:
+    Description: 'URL of the Firecrawl SQS queue'
+    Value: !Ref FirecrawlQueue
+    Export:
+      Name: !Sub '${Environment}-FirecrawlQueueUrl'
+  
+  FirecrawlQueueArn:
+    Description: 'ARN of the Firecrawl SQS queue'
+    Value: !GetAtt FirecrawlQueue.Arn
+    Export:
+      Name: !Sub '${Environment}-FirecrawlQueueArn'
+  
+  FirecrawlStateMachineArn:
+    Description: 'ARN of the Firecrawl Step Functions state machine'
+    Value: !Ref FirecrawlStateMachine
+    Export:
+      Name: !Sub '${Environment}-FirecrawlStateMachineArn'

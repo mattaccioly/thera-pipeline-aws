@@ -1,0 +1,348 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Embeddings Batch Lambda Function with Bedrock Titan and Cost Guardrails'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Environment name
+  
+  CuratedBucket:
+    Type: String
+    Description: S3 bucket for curated data storage
+    Default: thera-curated
+  
+  EmbeddingsBucket:
+    Type: String
+    Description: S3 bucket for embeddings storage
+    Default: thera-embeddings
+  
+  AthenaDatabase:
+    Type: String
+    Description: Athena database name
+    Default: thera_analytics
+  
+  AthenaWorkgroup:
+    Type: String
+    Description: Athena workgroup name
+    Default: primary
+  
+  BedrockModelId:
+    Type: String
+    Description: Bedrock model ID for embeddings
+    Default: amazon.titan-embed-text-v1
+    AllowedValues: 
+      - amazon.titan-embed-text-v1
+      - amazon.titan-embed-text-v2
+  
+  MaxBatchSize:
+    Type: Number
+    Default: 25
+    Description: Maximum batch size for embeddings processing
+    MinValue: 1
+    MaxValue: 100
+  
+  MaxDailyItems:
+    Type: Number
+    Default: 10000
+    Description: Maximum daily items to process
+    MinValue: 100
+    MaxValue: 100000
+  
+  CostPerEmbedding:
+    Type: Number
+    Default: 0.0001
+    Description: Cost per embedding in USD
+    MinValue: 0.00001
+    MaxValue: 0.01
+  
+  DailyBudget:
+    Type: Number
+    Default: 100.0
+    Description: Daily budget in USD
+    MinValue: 1.0
+    MaxValue: 1000.0
+
+Resources:
+  # IAM Role for Lambda
+  EmbeddingsBatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Environment}-embeddings-batch-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: EmbeddingsBatchPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # S3 permissions
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${CuratedBucket}/*'
+                  - !Sub 'arn:aws:s3:::${EmbeddingsBucket}/*'
+              
+              # Athena permissions
+              - Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:StopQueryExecution
+                  - athena:GetWorkGroup
+                Resource: '*'
+              
+              # Bedrock permissions
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource: 
+                  - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}'
+              
+              # SSM Parameter Store permissions
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:PutParameter
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/thera/embeddings/*'
+              
+              # CloudWatch permissions
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+
+  # Lambda Function
+  EmbeddingsBatchFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${Environment}-embeddings-batch'
+      CodeUri: .
+      Handler: lambda-embeddings-batch.lambda_handler
+      Runtime: python3.12
+      Timeout: 900  # 15 minutes
+      MemorySize: 2048  # More memory for pandas/pyarrow operations
+      Environment:
+        Variables:
+          CURATED_BUCKET: !Ref CuratedBucket
+          EMBEDDINGS_BUCKET: !Ref EmbeddingsBucket
+          ATHENA_DATABASE: !Ref AthenaDatabase
+          ATHENA_WORKGROUP: !Ref AthenaWorkgroup
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+          MAX_BATCH_SIZE: !Ref MaxBatchSize
+          MAX_DAILY_ITEMS: !Ref MaxDailyItems
+          COST_PER_EMBEDDING: !Ref CostPerEmbedding
+          DAILY_BUDGET: !Ref DailyBudget
+          WATERMARK_PARAMETER: /thera/embeddings/watermark
+          AWS_REGION: !Ref AWS::Region
+      Role: !GetAtt EmbeddingsBatchRole.Arn
+      Events:
+        # Daily trigger
+        DailyTrigger:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 12 * * ? *)  # Daily at 12 PM UTC
+            Name: !Sub '${Environment}-embeddings-daily-trigger'
+            Description: 'Daily trigger for embeddings batch processing'
+            Enabled: true
+      Tags:
+        Environment: !Ref Environment
+        Service: thera-pipeline
+        Component: embeddings-batch
+
+  # CloudWatch Log Group
+  EmbeddingsBatchLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${Environment}-embeddings-batch'
+      RetentionInDays: 14
+
+  # SSM Parameter for watermark
+  EmbeddingsWatermarkParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /thera/embeddings/watermark
+      Type: String
+      Value: !Sub '${AWS::StackName}-initial'
+      Description: 'Watermark timestamp for embeddings processing'
+      Tags:
+        Environment: !Ref Environment
+        Service: thera-pipeline
+        Component: embeddings-watermark
+
+  # CloudWatch Alarms
+  EmbeddingsBatchErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-embeddings-batch-errors'
+      AlarmDescription: 'Embeddings Batch Lambda errors'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref EmbeddingsBatchFunction
+      TreatMissingData: notBreaching
+
+  EmbeddingsBatchDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-embeddings-batch-duration'
+      AlarmDescription: 'Embeddings Batch Lambda duration too high'
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 600000  # 10 minutes in milliseconds
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref EmbeddingsBatchFunction
+      TreatMissingData: notBreaching
+
+  # Custom metrics for business logic
+  EmbeddingsCostAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-embeddings-cost-high'
+      AlarmDescription: 'Embeddings processing cost is high'
+      MetricName: TotalCost
+      Namespace: TheraPipeline/Embeddings
+      Statistic: Sum
+      Period: 3600  # 1 hour
+      EvaluationPeriods: 1
+      Threshold: 50.0  # $50 per hour
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  EmbeddingsProcessingRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-embeddings-processing-rate-low'
+      AlarmDescription: 'Embeddings processing rate is low'
+      MetricName: ItemsProcessed
+      Namespace: TheraPipeline/Embeddings
+      Statistic: Sum
+      Period: 3600  # 1 hour
+      EvaluationPeriods: 1
+      Threshold: 100  # Less than 100 items per hour
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+
+  # S3 Bucket for embeddings (if not exists)
+  EmbeddingsBucketResource:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref EmbeddingsBucket
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: thera-pipeline
+        - Key: Component
+          Value: embeddings-storage
+
+  # Glue Table for embeddings (for querying)
+  EmbeddingsGlueTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref AthenaDatabase
+      TableInput:
+        Name: embeddings
+        Description: 'Company embeddings table'
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          classification: parquet
+          typeOfData: file
+        StorageDescriptor:
+          Columns:
+            - Name: company_key
+              Type: string
+            - Name: company_name
+              Type: string
+            - Name: industry
+              Type: string
+            - Name: country
+              Type: string
+            - Name: profile_text_hash
+              Type: string
+            - Name: embedding_vector
+              Type: array<float>
+            - Name: embedding_model
+              Type: string
+            - Name: embedding_timestamp
+              Type: string
+            - Name: embedding_cost
+              Type: double
+            - Name: updated_at
+              Type: string
+          Location: !Sub 's3://${EmbeddingsBucket}/embeddings/'
+          InputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe
+        PartitionKeys:
+          - Name: date
+            Type: string
+
+Outputs:
+  EmbeddingsBatchFunctionArn:
+    Description: 'ARN of the Embeddings Batch Lambda function'
+    Value: !GetAtt EmbeddingsBatchFunction.Arn
+    Export:
+      Name: !Sub '${Environment}-EmbeddingsBatchFunctionArn'
+  
+  EmbeddingsBatchRoleArn:
+    Description: 'ARN of the Embeddings Batch IAM role'
+    Value: !GetAtt EmbeddingsBatchRole.Arn
+    Export:
+      Name: !Sub '${Environment}-EmbeddingsBatchRoleArn'
+  
+  EmbeddingsBucketName:
+    Description: 'Name of the embeddings S3 bucket'
+    Value: !Ref EmbeddingsBucketResource
+    Export:
+      Name: !Sub '${Environment}-EmbeddingsBucketName'
+  
+  EmbeddingsBucketArn:
+    Description: 'ARN of the embeddings S3 bucket'
+    Value: !GetAtt EmbeddingsBucketResource.Arn
+    Export:
+      Name: !Sub '${Environment}-EmbeddingsBucketArn'

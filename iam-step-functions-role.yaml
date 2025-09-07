@@ -1,0 +1,209 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'IAM Role and Policies for Thera Pipeline Step Functions State Machine'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: 'prod'
+    AllowedValues: ['dev', 'staging', 'prod']
+    Description: 'Environment name'
+  
+  StateMachineName:
+    Type: String
+    Default: 'thera-pipeline-state-machine'
+    Description: 'Name of the Step Functions state machine'
+
+Resources:
+  # IAM Role for Step Functions State Machine
+  StepFunctionsExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub '${StateMachineName}-execution-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref StepFunctionsExecutionPolicy
+        - !Ref StepFunctionsCloudWatchPolicy
+        - !Ref StepFunctionsXRayPolicy
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'Thera Pipeline Orchestration'
+
+  # Main execution policy for Step Functions
+  StepFunctionsExecutionPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      ManagedPolicyName: !Sub '${StateMachineName}-execution-policy-${Environment}'
+      Description: 'Policy for Step Functions to execute Lambda functions, Athena queries, and S3 operations'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Lambda function execution permissions
+          - Effect: Allow
+            Action:
+              - lambda:InvokeFunction
+              - lambda:GetFunction
+              - lambda:GetFunctionConfiguration
+            Resource:
+              - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-apollo-delta-pull-*'
+              - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-athena-ctas-*'
+              - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-domain-health-gate-*'
+              - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-firecrawl-orchestrator-*'
+              - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-embeddings-batch-*'
+              - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-ams-computation-*'
+              - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-dynamodb-publisher-*'
+              - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-ml-training-*'
+              - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-evaluation-metrics-*'
+
+          # Athena permissions
+          - Effect: Allow
+            Action:
+              - athena:StartQueryExecution
+              - athena:StopQueryExecution
+              - athena:GetQueryExecution
+              - athena:GetQueryResults
+              - athena:GetWorkGroup
+              - athena:ListQueryExecutions
+            Resource: '*'
+
+          # S3 permissions for data lake
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+              - s3:ListBucket
+              - s3:GetBucketLocation
+              - s3:GetObjectVersion
+            Resource:
+              - !Sub 'arn:aws:s3:::thera-data-lake-${Environment}/*'
+              - !Sub 'arn:aws:s3:::thera-data-lake-${Environment}'
+              - !Sub 'arn:aws:s3:::thera-ml-models-${Environment}/*'
+              - !Sub 'arn:aws:s3:::thera-ml-models-${Environment}'
+
+          # Glue Data Catalog permissions
+          - Effect: Allow
+            Action:
+              - glue:GetDatabase
+              - glue:GetDatabases
+              - glue:GetTable
+              - glue:GetTables
+              - glue:GetPartition
+              - glue:GetPartitions
+              - glue:CreateTable
+              - glue:UpdateTable
+              - glue:DeleteTable
+              - glue:BatchCreatePartition
+              - glue:BatchDeletePartition
+            Resource: '*'
+
+          # DynamoDB permissions
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:BatchGetItem
+              - dynamodb:BatchWriteItem
+            Resource:
+              - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/thera-startup-profiles-${Environment}'
+              - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/thera-company-data-${Environment}'
+              - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/thera-domain-health-${Environment}'
+
+          # SSM Parameter Store permissions
+          - Effect: Allow
+            Action:
+              - ssm:GetParameter
+              - ssm:GetParameters
+              - ssm:GetParametersByPath
+            Resource:
+              - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/thera/apollo/*'
+              - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/thera/firecrawl/*'
+              - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/thera/bedrock/*'
+
+          # Secrets Manager permissions
+          - Effect: Allow
+            Action:
+              - secretsmanager:GetSecretValue
+              - secretsmanager:DescribeSecret
+            Resource:
+              - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:thera/apollo-credentials-*'
+              - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:thera/firecrawl-credentials-*'
+
+          # Bedrock permissions for embeddings
+          - Effect: Allow
+            Action:
+              - bedrock:InvokeModel
+              - bedrock:InvokeModelWithResponseStream
+            Resource:
+              - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v1'
+              - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v2'
+
+          # ECR permissions for ML training container
+          - Effect: Allow
+            Action:
+              - ecr:GetAuthorizationToken
+              - ecr:BatchCheckLayerAvailability
+              - ecr:GetDownloadUrlForLayer
+              - ecr:BatchGetImage
+            Resource: '*'
+
+  # CloudWatch Logs policy
+  StepFunctionsCloudWatchPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      ManagedPolicyName: !Sub '${StateMachineName}-cloudwatch-policy-${Environment}'
+      Description: 'Policy for Step Functions to write to CloudWatch Logs'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:DescribeLogGroups
+              - logs:DescribeLogStreams
+            Resource:
+              - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/stepfunctions/${StateMachineName}*'
+              - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/thera-*'
+
+  # X-Ray tracing policy
+  StepFunctionsXRayPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      ManagedPolicyName: !Sub '${StateMachineName}-xray-policy-${Environment}'
+      Description: 'Policy for Step Functions X-Ray tracing'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - xray:PutTraceSegments
+              - xray:PutTelemetryRecords
+              - xray:GetSamplingRules
+              - xray:GetSamplingTargets
+            Resource: '*'
+
+Outputs:
+  StepFunctionsExecutionRoleArn:
+    Description: 'ARN of the Step Functions execution role'
+    Value: !GetAtt StepFunctionsExecutionRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-StepFunctionsExecutionRoleArn'
+
+  StepFunctionsExecutionRoleName:
+    Description: 'Name of the Step Functions execution role'
+    Value: !Ref StepFunctionsExecutionRole
+    Export:
+      Name: !Sub '${AWS::StackName}-StepFunctionsExecutionRoleName'

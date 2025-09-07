@@ -1,0 +1,172 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Athena CTAS Lambda Function for BRONZE→SILVER Transformation'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: 'prod'
+    AllowedValues: ['dev', 'staging', 'prod']
+    Description: 'Environment name'
+  
+  S3OutputLocation:
+    Type: String
+    Description: 'S3 location for Athena query results'
+  
+  SilverDatabase:
+    Type: String
+    Default: 'thera_silver'
+    Description: 'Name of the silver database'
+  
+  AthenaWorkgroup:
+    Type: String
+    Default: 'primary'
+    Description: 'Athena workgroup name'
+
+Resources:
+  # IAM role for Lambda function
+  AthenaCTASRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub 'thera-athena-ctas-bronze-silver-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Ref AthenaCTASPolicy
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # IAM policy for Lambda function
+  AthenaCTASPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      ManagedPolicyName: !Sub 'thera-athena-ctas-bronze-silver-policy-${Environment}'
+      Description: 'Policy for Athena CTAS Lambda function'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Athena permissions
+          - Effect: Allow
+            Action:
+              - athena:StartQueryExecution
+              - athena:StopQueryExecution
+              - athena:GetQueryExecution
+              - athena:GetQueryResults
+              - athena:GetWorkGroup
+              - athena:ListQueryExecutions
+            Resource: '*'
+
+          # S3 permissions for query results and data
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+              - s3:ListBucket
+              - s3:GetBucketLocation
+            Resource:
+              - !Sub 'arn:aws:s3:::${S3OutputLocation}/*'
+              - !Sub 'arn:aws:s3:::${S3OutputLocation}'
+
+          # Glue Data Catalog permissions
+          - Effect: Allow
+            Action:
+              - glue:GetDatabase
+              - glue:GetDatabases
+              - glue:GetTable
+              - glue:GetTables
+              - glue:GetPartition
+              - glue:GetPartitions
+              - glue:CreateTable
+              - glue:UpdateTable
+              - glue:DeleteTable
+              - glue:BatchCreatePartition
+              - glue:BatchDeletePartition
+              - glue:GetPartitionIndexes
+            Resource: '*'
+
+  # Lambda function
+  AthenaCTASFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub 'thera-athena-ctas-bronze-silver-${Environment}'
+      Runtime: python3.9
+      Handler: lambda-athena-ctas-bronze-silver.lambda_handler
+      Role: !GetAtt AthenaCTASRole.Arn
+      Timeout: 1800  # 30 minutes
+      MemorySize: 1024
+      Environment:
+        Variables:
+          ATHENA_WORKGROUP: !Ref AthenaWorkgroup
+          S3_OUTPUT_LOCATION: !Ref S3OutputLocation
+          SILVER_DATABASE: !Ref SilverDatabase
+          TIMEOUT_MINUTES: '30'
+      Code:
+        ZipFile: |
+          # Placeholder - actual code will be deployed via CI/CD
+          def lambda_handler(event, context):
+              return {'statusCode': 200, 'body': 'Athena CTAS Lambda'}
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'Athena CTAS BRONZE to SILVER'
+
+  # CloudWatch Log Group
+  AthenaCTASLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/thera-athena-ctas-bronze-silver-${Environment}'
+      RetentionInDays: 30
+
+  # CloudWatch Alarms
+  AthenaCTASErrorAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'thera-athena-ctas-bronze-silver-errors-${Environment}'
+      AlarmDescription: 'Alarm for Athena CTAS Lambda errors'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref AthenaCTASFunction
+
+  AthenaCTASDurationAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'thera-athena-ctas-bronze-silver-duration-${Environment}'
+      AlarmDescription: 'Alarm for Athena CTAS Lambda duration'
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1500000  # 25 minutes in milliseconds
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref AthenaCTASFunction
+
+Outputs:
+  AthenaCTASFunctionArn:
+    Description: 'ARN of the Athena CTAS Lambda function'
+    Value: !GetAtt AthenaCTASFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-AthenaCTASFunctionArn'
+
+  AthenaCTASFunctionName:
+    Description: 'Name of the Athena CTAS Lambda function'
+    Value: !Ref AthenaCTASFunction
+    Export:
+      Name: !Sub '${AWS::StackName}-AthenaCTASFunctionName'

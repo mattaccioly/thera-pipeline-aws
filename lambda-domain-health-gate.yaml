@@ -1,0 +1,225 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Domain Health Gate Lambda Function with Async Health Checks'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Environment name
+  
+  CuratedBucket:
+    Type: String
+    Description: S3 bucket for curated data storage
+    Default: thera-curated
+  
+  AthenaDatabase:
+    Type: String
+    Description: Athena database name
+    Default: thera_analytics
+  
+  AthenaWorkgroup:
+    Type: String
+    Description: Athena workgroup name
+    Default: primary
+  
+  MaxConcurrency:
+    Type: Number
+    Default: 10
+    Description: Maximum concurrent domain checks
+    MinValue: 1
+    MaxValue: 50
+  
+  RequestTimeout:
+    Type: Number
+    Default: 2
+    Description: Request timeout in seconds
+    MinValue: 1
+    MaxValue: 10
+
+Resources:
+  # IAM Role for Lambda
+  DomainHealthGateRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Environment}-domain-health-gate-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DomainHealthGatePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # S3 permissions
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${CuratedBucket}/*'
+              
+              # Athena permissions
+              - Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:StopQueryExecution
+                  - athena:GetWorkGroup
+                Resource: '*'
+              
+              # CloudWatch permissions
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+
+  # Lambda Function
+  DomainHealthGateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${Environment}-domain-health-gate'
+      CodeUri: .
+      Handler: lambda-domain-health-gate.lambda_handler
+      Runtime: python3.12
+      Timeout: 900  # 15 minutes
+      MemorySize: 1024  # More memory for async operations
+      Environment:
+        Variables:
+          CURATED_BUCKET: !Ref CuratedBucket
+          ATHENA_DATABASE: !Ref AthenaDatabase
+          ATHENA_WORKGROUP: !Ref AthenaWorkgroup
+          MAX_CONCURRENCY: !Ref MaxConcurrency
+          REQUEST_TIMEOUT: !Ref RequestTimeout
+          AWS_REGION: !Ref AWS::Region
+      Role: !GetAtt DomainHealthGateRole.Arn
+      Events:
+        # Can be triggered by EventBridge, SQS, or direct invocation
+        EventBridgeTrigger:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 8 * * ? *)  # Daily at 8 AM UTC
+            Name: !Sub '${Environment}-domain-health-daily-trigger'
+            Description: 'Daily trigger for domain health checks'
+            Enabled: false  # Disabled by default, enable as needed
+      Tags:
+        Environment: !Ref Environment
+        Service: thera-pipeline
+        Component: domain-health-gate
+
+  # CloudWatch Log Group
+  DomainHealthGateLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${Environment}-domain-health-gate'
+      RetentionInDays: 14
+
+  # CloudWatch Alarms
+  DomainHealthGateErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-domain-health-gate-errors'
+      AlarmDescription: 'Domain Health Gate Lambda errors'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref DomainHealthGateFunction
+      TreatMissingData: notBreaching
+
+  DomainHealthGateDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-domain-health-gate-duration'
+      AlarmDescription: 'Domain Health Gate Lambda duration too high'
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 600000  # 10 minutes in milliseconds
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref DomainHealthGateFunction
+      TreatMissingData: notBreaching
+
+  # Custom metrics for business logic
+  DomainHealthScoreAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-domain-health-score-low'
+      AlarmDescription: 'Average domain health score is low'
+      MetricName: AverageHealthScore
+      Namespace: TheraPipeline/DomainHealth
+      Statistic: Average
+      Period: 3600  # 1 hour
+      EvaluationPeriods: 1
+      Threshold: 0.3
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+
+  # SQS Queue for domain processing (optional)
+  DomainHealthQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${Environment}-domain-health-queue'
+      VisibilityTimeoutSeconds: 900  # 15 minutes
+      MessageRetentionPeriod: 1209600  # 14 days
+      ReceiveMessageWaitTimeSeconds: 20  # Long polling
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: thera-pipeline
+        - Key: Component
+          Value: domain-health-gate
+
+  # SQS Event Source Mapping (optional)
+  DomainHealthSQSEventSource:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt DomainHealthQueue.Arn
+      FunctionName: !Ref DomainHealthGateFunction
+      BatchSize: 1
+      MaximumBatchingWindowInSeconds: 5
+      Enabled: false  # Disabled by default, enable as needed
+
+Outputs:
+  DomainHealthGateFunctionArn:
+    Description: 'ARN of the Domain Health Gate Lambda function'
+    Value: !GetAtt DomainHealthGateFunction.Arn
+    Export:
+      Name: !Sub '${Environment}-DomainHealthGateFunctionArn'
+  
+  DomainHealthGateRoleArn:
+    Description: 'ARN of the Domain Health Gate IAM role'
+    Value: !GetAtt DomainHealthGateRole.Arn
+    Export:
+      Name: !Sub '${Environment}-DomainHealthGateRoleArn'
+  
+  DomainHealthQueueUrl:
+    Description: 'URL of the Domain Health SQS queue'
+    Value: !Ref DomainHealthQueue
+    Export:
+      Name: !Sub '${Environment}-DomainHealthQueueUrl'
+  
+  DomainHealthQueueArn:
+    Description: 'ARN of the Domain Health SQS queue'
+    Value: !GetAtt DomainHealthQueue.Arn
+    Export:
+      Name: !Sub '${Environment}-DomainHealthQueueArn'

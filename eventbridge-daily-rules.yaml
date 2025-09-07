@@ -1,0 +1,225 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'EventBridge Rules for Daily Pipeline Execution'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: 'prod'
+    AllowedValues: ['dev', 'staging', 'prod']
+    Description: 'Environment name'
+  
+  DailyStateMachineArn:
+    Type: String
+    Description: 'ARN of the daily Step Functions state machine'
+  
+  ExecutionRoleArn:
+    Type: String
+    Description: 'ARN of the EventBridge execution role'
+
+Resources:
+  # EventBridge Rule for Daily Execution
+  DailyPipelineRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: !Sub 'thera-pipeline-daily-rule-${Environment}'
+      Description: 'Triggers daily pipeline execution at 01:00 America/Sao_Paulo'
+      ScheduleExpression: 'cron(0 4 * * ? *)'  # 01:00 America/Sao_Paulo (UTC-3) = 04:00 UTC
+      State: 'ENABLED'
+      Targets:
+        - Arn: !Ref DailyStateMachineArn
+          Id: 'DailyPipelineTarget'
+          RoleArn: !Ref ExecutionRoleArn
+          Input: !Sub |
+            {
+              "execution_type": "daily",
+              "environment": "${Environment}",
+              "triggered_by": "eventbridge_schedule",
+              "execution_time": "01:00 America/Sao_Paulo",
+              "metadata": {
+                "pipeline_version": "1.0",
+                "expected_duration_minutes": 120,
+                "retry_policy": "exponential_backoff"
+              }
+            }
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'Daily Pipeline Trigger'
+
+  # EventBridge Rule for Manual Execution (for testing)
+  DailyPipelineManualRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: !Sub 'thera-pipeline-daily-manual-rule-${Environment}'
+      Description: 'Manual trigger for daily pipeline execution (for testing)'
+      EventPattern:
+        source:
+          - 'thera.pipeline'
+        detail-type:
+          - 'Daily Pipeline Manual Trigger'
+        detail:
+          environment:
+            - !Ref Environment
+      State: 'ENABLED'
+      Targets:
+        - Arn: !Ref DailyStateMachineArn
+          Id: 'DailyPipelineManualTarget'
+          RoleArn: !Ref ExecutionRoleArn
+          Input: !Sub |
+            {
+              "execution_type": "daily_manual",
+              "environment": "${Environment}",
+              "triggered_by": "manual_trigger",
+              "execution_time": "manual",
+              "metadata": {
+                "pipeline_version": "1.0",
+                "expected_duration_minutes": 120,
+                "retry_policy": "exponential_backoff"
+              }
+            }
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'Daily Pipeline Manual Trigger'
+
+  # EventBridge Rule for Error Handling
+  DailyPipelineErrorRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: !Sub 'thera-pipeline-daily-error-rule-${Environment}'
+      Description: 'Handles daily pipeline execution errors and failures'
+      EventPattern:
+        source:
+          - 'aws.states'
+        detail-type:
+          - 'Step Functions Execution Status Change'
+        detail:
+          stateMachineArn:
+            - !Ref DailyStateMachineArn
+          status:
+            - 'FAILED'
+            - 'TIMED_OUT'
+            - 'ABORTED'
+      State: 'ENABLED'
+      Targets:
+        - Arn: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:thera-pipeline-alerts-${Environment}'
+          Id: 'DailyPipelineErrorTarget'
+          Input: !Sub |
+            {
+              "subject": "Thera Pipeline Daily Execution Failed",
+              "message": "Daily pipeline execution has failed. Please check the Step Functions console for details.",
+              "environment": "${Environment}",
+              "execution_arn": "<aws.states.execution-arn>",
+              "failure_reason": "<aws.states.input>"
+            }
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'Daily Pipeline Error Handling'
+
+  # EventBridge Rule for Success Notifications
+  DailyPipelineSuccessRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: !Sub 'thera-pipeline-daily-success-rule-${Environment}'
+      Description: 'Handles daily pipeline execution success notifications'
+      EventPattern:
+        source:
+          - 'aws.states'
+        detail-type:
+          - 'Step Functions Execution Status Change'
+        detail:
+          stateMachineArn:
+            - !Ref DailyStateMachineArn
+          status:
+            - 'SUCCEEDED'
+      State: 'ENABLED'
+      Targets:
+        - Arn: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:thera-pipeline-alerts-${Environment}'
+          Id: 'DailyPipelineSuccessTarget'
+          Input: !Sub |
+            {
+              "subject": "Thera Pipeline Daily Execution Completed Successfully",
+              "message": "Daily pipeline execution has completed successfully.",
+              "environment": "${Environment}",
+              "execution_arn": "<aws.states.execution-arn>",
+              "execution_duration": "<aws.states.execution-duration>"
+            }
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'Daily Pipeline Success Notification'
+
+  # CloudWatch Log Group for EventBridge
+  EventBridgeLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/events/thera-pipeline-daily-${Environment}'
+      RetentionInDays: 30
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'EventBridge Execution Logs'
+
+  # CloudWatch Alarms for EventBridge
+  EventBridgeRuleFailureAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'thera-pipeline-daily-eventbridge-failures-${Environment}'
+      AlarmDescription: 'Alarm for EventBridge rule execution failures'
+      MetricName: FailedInvocations
+      Namespace: AWS/Events
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: RuleName
+          Value: !Ref DailyPipelineRule
+
+  EventBridgeRuleSuccessAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'thera-pipeline-daily-eventbridge-success-${Environment}'
+      AlarmDescription: 'Alarm for EventBridge rule execution success rate'
+      MetricName: SuccessfulInvocations
+      Namespace: AWS/Events
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: RuleName
+          Value: !Ref DailyPipelineRule
+
+Outputs:
+  DailyPipelineRuleArn:
+    Description: 'ARN of the daily pipeline EventBridge rule'
+    Value: !Ref DailyPipelineRule
+    Export:
+      Name: !Sub '${AWS::StackName}-DailyPipelineRuleArn'
+
+  DailyPipelineRuleName:
+    Description: 'Name of the daily pipeline EventBridge rule'
+    Value: !Ref DailyPipelineRule
+    Export:
+      Name: !Sub '${AWS::StackName}-DailyPipelineRuleName'
+
+  DailyPipelineManualRuleArn:
+    Description: 'ARN of the daily pipeline manual EventBridge rule'
+    Value: !Ref DailyPipelineManualRule
+    Export:
+      Name: !Sub '${AWS::StackName}-DailyPipelineManualRuleArn'
+
+  EventBridgeLogGroupArn:
+    Description: 'ARN of the EventBridge CloudWatch Log Group'
+    Value: !GetAtt EventBridgeLogGroup.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-EventBridgeLogGroupArn'

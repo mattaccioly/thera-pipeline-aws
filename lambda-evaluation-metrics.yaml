@@ -1,0 +1,304 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Evaluation Metrics Lambda Function'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: 'prod'
+    AllowedValues: ['dev', 'staging', 'prod']
+    Description: 'Environment name'
+  
+  S3OutputLocation:
+    Type: String
+    Description: 'S3 location for Athena query results'
+  
+  S3Bucket:
+    Type: String
+    Description: 'S3 bucket for storing metrics'
+  
+  S3Prefix:
+    Type: String
+    Default: 'thera-pipeline'
+    Description: 'S3 prefix for organizing metrics'
+  
+  AthenaWorkgroup:
+    Type: String
+    Default: 'primary'
+    Description: 'Athena workgroup name'
+  
+  CVFolds:
+    Type: Number
+    Default: 5
+    Description: 'Cross-validation folds'
+  
+  ConfidenceThreshold:
+    Type: Number
+    Default: 0.5
+    Description: 'Confidence threshold for predictions'
+  
+  TopKFeatures:
+    Type: Number
+    Default: 20
+    Description: 'Top K features to include in metrics'
+
+Resources:
+  # Glue Database for ML metrics
+  MLMetricsDatabase:
+    Type: 'AWS::Glue::Database'
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Sub 'thera_ml_metrics_${Environment}'
+        Description: 'Database for ML evaluation metrics'
+        Parameters:
+          'description': 'ML evaluation metrics database'
+
+  # Glue Table for evaluation metrics
+  MLMetricsTable:
+    Type: 'AWS::Glue::Table'
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref MLMetricsDatabase
+      TableInput:
+        Name: 'evaluation_metrics'
+        Description: 'ML model evaluation metrics'
+        TableType: 'EXTERNAL_TABLE'
+        Parameters:
+          'classification': 'json'
+          'typeOfData': 'file'
+        StorageDescriptor:
+          Columns:
+            - Name: evaluation_date
+              Type: string
+            - Name: model_name
+              Type: string
+            - Name: accuracy
+              Type: double
+            - Name: precision
+              Type: double
+            - Name: recall
+              Type: double
+            - Name: f1_score
+              Type: double
+            - Name: auc_score
+              Type: double
+            - Name: pr_auc_score
+              Type: double
+            - Name: cross_val_mean
+              Type: double
+            - Name: cross_val_std
+              Type: double
+            - Name: top_features
+              Type: string
+            - Name: confusion_matrix
+              Type: string
+            - Name: roc_curve
+              Type: string
+            - Name: pr_curve
+              Type: string
+          Location: !Sub 's3://${S3Bucket}/${S3Prefix}/glue-tables/ml_evaluation_metrics/'
+          InputFormat: 'org.apache.hadoop.mapred.TextInputFormat'
+          OutputFormat: 'org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat'
+          SerdeInfo:
+            SerializationLibrary: 'org.openx.data.jsonserde.JsonSerDe'
+        PartitionKeys:
+          - Name: year
+            Type: int
+          - Name: month
+            Type: int
+          - Name: day
+            Type: int
+
+  # IAM role for Lambda function
+  EvaluationMetricsRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub 'thera-evaluation-metrics-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Ref EvaluationMetricsPolicy
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # IAM policy for Lambda function
+  EvaluationMetricsPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      ManagedPolicyName: !Sub 'thera-evaluation-metrics-policy-${Environment}'
+      Description: 'Policy for Evaluation Metrics Lambda function'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # S3 permissions for metrics and models
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+              - s3:ListBucket
+              - s3:GetBucketLocation
+            Resource:
+              - !Sub 'arn:aws:s3:::${S3OutputLocation}/*'
+              - !Sub 'arn:aws:s3:::${S3OutputLocation}'
+              - !Sub 'arn:aws:s3:::${S3Bucket}/${S3Prefix}/*'
+              - !Sub 'arn:aws:s3:::${S3Bucket}/${S3Prefix}'
+
+          # Athena permissions
+          - Effect: Allow
+            Action:
+              - athena:StartQueryExecution
+              - athena:StopQueryExecution
+              - athena:GetQueryExecution
+              - athena:GetQueryResults
+              - athena:GetWorkGroup
+              - athena:ListQueryExecutions
+            Resource: '*'
+
+          # Glue Data Catalog permissions
+          - Effect: Allow
+            Action:
+              - glue:GetDatabase
+              - glue:GetDatabases
+              - glue:GetTable
+              - glue:GetTables
+              - glue:GetPartition
+              - glue:GetPartitions
+              - glue:CreateTable
+              - glue:UpdateTable
+              - glue:DeleteTable
+              - glue:BatchCreatePartition
+              - glue:BatchDeletePartition
+            Resource: '*'
+
+  # Lambda function
+  EvaluationMetricsFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub 'thera-evaluation-metrics-${Environment}'
+      Runtime: python3.9
+      Handler: lambda-evaluation-metrics.lambda_handler
+      Role: !GetAtt EvaluationMetricsRole.Arn
+      Timeout: 900  # 15 minutes
+      MemorySize: 2048  # Increased memory for ML evaluation
+      Environment:
+        Variables:
+          ATHENA_WORKGROUP: !Ref AthenaWorkgroup
+          S3_OUTPUT_LOCATION: !Ref S3OutputLocation
+          S3_BUCKET: !Ref S3Bucket
+          S3_PREFIX: !Ref S3Prefix
+          ENVIRONMENT: !Ref Environment
+          CV_FOLDS: !Ref CVFolds
+          CONFIDENCE_THRESHOLD: !Ref ConfidenceThreshold
+          TOP_K_FEATURES: !Ref TopKFeatures
+      Code:
+        ZipFile: |
+          # Placeholder - actual code will be deployed via CI/CD
+          def lambda_handler(event, context):
+              return {'statusCode': 200, 'body': 'Evaluation Metrics Lambda'}
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'ML Model Evaluation'
+
+  # CloudWatch Log Group
+  EvaluationMetricsLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/thera-evaluation-metrics-${Environment}'
+      RetentionInDays: 30
+
+  # CloudWatch Alarms
+  EvaluationMetricsErrorAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'thera-evaluation-metrics-errors-${Environment}'
+      AlarmDescription: 'Alarm for Evaluation Metrics Lambda errors'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref EvaluationMetricsFunction
+
+  EvaluationMetricsDurationAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'thera-evaluation-metrics-duration-${Environment}'
+      AlarmDescription: 'Alarm for Evaluation Metrics Lambda duration'
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 600000  # 10 minutes in milliseconds
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref EvaluationMetricsFunction
+
+  # Custom CloudWatch metrics for evaluation performance
+  ModelAUCScoreAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'thera-evaluation-metrics-low-auc-${Environment}'
+      AlarmDescription: 'Alarm when model AUC score is low'
+      MetricName: ModelAUCScore
+      Namespace: Thera/Evaluation
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 0.8  # 80% AUC threshold
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+
+  ModelAccuracyAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'thera-evaluation-metrics-low-accuracy-${Environment}'
+      AlarmDescription: 'Alarm when model accuracy is low'
+      MetricName: ModelAccuracy
+      Namespace: Thera/Evaluation
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 0.7  # 70% accuracy threshold
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+  EvaluationMetricsFunctionArn:
+    Description: 'ARN of the Evaluation Metrics Lambda function'
+    Value: !GetAtt EvaluationMetricsFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-EvaluationMetricsFunctionArn'
+
+  EvaluationMetricsFunctionName:
+    Description: 'Name of the Evaluation Metrics Lambda function'
+    Value: !Ref EvaluationMetricsFunction
+    Export:
+      Name: !Sub '${AWS::StackName}-EvaluationMetricsFunctionName'
+
+  MLMetricsDatabaseName:
+    Description: 'Name of the ML metrics Glue database'
+    Value: !Ref MLMetricsDatabase
+    Export:
+      Name: !Sub '${AWS::StackName}-MLMetricsDatabaseName'
+
+  MLMetricsTableName:
+    Description: 'Name of the evaluation metrics Glue table'
+    Value: !Ref MLMetricsTable
+    Export:
+      Name: !Sub '${AWS::StackName}-MLMetricsTableName'

@@ -1,0 +1,30 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "lambda:InvokeFunction"
+      ],
+      "Resource": [
+        "arn:aws:lambda:us-east-1:805595753342:function:dev-apollo-delta-pull",
+        "arn:aws:lambda:us-east-1:805595753342:function:dev-domain-health-gate",
+        "arn:aws:lambda:us-east-1:805595753342:function:dev-firecrawl-orchestrator",
+        "arn:aws:lambda:us-east-1:805595753342:function:dev-embeddings-batch",
+        "arn:aws:lambda:us-east-1:805595753342:function:dev-matcher",
+        "arn:aws:lambda:us-east-1:805595753342:function:dev-ams-computation",
+        "arn:aws:lambda:us-east-1:805595753342:function:dev-dynamodb-publisher",
+        "arn:aws:lambda:us-east-1:805595753342:function:dev-ml-training"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "arn:aws:logs:us-east-1:805595753342:*"
+    }
+  ]
+}

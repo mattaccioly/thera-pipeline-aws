@@ -1,0 +1,288 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'EventBridge Rules for Weekly ML Pipeline Execution'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: 'prod'
+    AllowedValues: ['dev', 'staging', 'prod']
+    Description: 'Environment name'
+  
+  WeeklyStateMachineArn:
+    Type: String
+    Description: 'ARN of the weekly Step Functions state machine'
+  
+  ExecutionRoleArn:
+    Type: String
+    Description: 'ARN of the EventBridge execution role'
+
+Resources:
+  # EventBridge Rule for Weekly Execution
+  WeeklyPipelineRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: !Sub 'thera-pipeline-weekly-rule-${Environment}'
+      Description: 'Triggers weekly ML pipeline execution on Monday at 03:00 America/Sao_Paulo'
+      ScheduleExpression: 'cron(0 6 ? * MON *)'  # Monday 03:00 America/Sao_Paulo (UTC-3) = 06:00 UTC
+      State: 'ENABLED'
+      Targets:
+        - Arn: !Ref WeeklyStateMachineArn
+          Id: 'WeeklyPipelineTarget'
+          RoleArn: !Ref ExecutionRoleArn
+          Input: !Sub |
+            {
+              "execution_type": "weekly",
+              "environment": "${Environment}",
+              "triggered_by": "eventbridge_schedule",
+              "execution_time": "Monday 03:00 America/Sao_Paulo",
+              "metadata": {
+                "pipeline_version": "1.0",
+                "expected_duration_minutes": 60,
+                "retry_policy": "exponential_backoff",
+                "ml_training": true,
+                "model_evaluation": true
+              }
+            }
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'Weekly ML Pipeline Trigger'
+
+  # EventBridge Rule for Manual Weekly Execution (for testing)
+  WeeklyPipelineManualRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: !Sub 'thera-pipeline-weekly-manual-rule-${Environment}'
+      Description: 'Manual trigger for weekly ML pipeline execution (for testing)'
+      EventPattern:
+        source:
+          - 'thera.pipeline'
+        detail-type:
+          - 'Weekly Pipeline Manual Trigger'
+        detail:
+          environment:
+            - !Ref Environment
+      State: 'ENABLED'
+      Targets:
+        - Arn: !Ref WeeklyStateMachineArn
+          Id: 'WeeklyPipelineManualTarget'
+          RoleArn: !Ref ExecutionRoleArn
+          Input: !Sub |
+            {
+              "execution_type": "weekly_manual",
+              "environment": "${Environment}",
+              "triggered_by": "manual_trigger",
+              "execution_time": "manual",
+              "metadata": {
+                "pipeline_version": "1.0",
+                "expected_duration_minutes": 60,
+                "retry_policy": "exponential_backoff",
+                "ml_training": true,
+                "model_evaluation": true
+              }
+            }
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'Weekly ML Pipeline Manual Trigger'
+
+  # EventBridge Rule for Weekly Error Handling
+  WeeklyPipelineErrorRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: !Sub 'thera-pipeline-weekly-error-rule-${Environment}'
+      Description: 'Handles weekly ML pipeline execution errors and failures'
+      EventPattern:
+        source:
+          - 'aws.states'
+        detail-type:
+          - 'Step Functions Execution Status Change'
+        detail:
+          stateMachineArn:
+            - !Ref WeeklyStateMachineArn
+          status:
+            - 'FAILED'
+            - 'TIMED_OUT'
+            - 'ABORTED'
+      State: 'ENABLED'
+      Targets:
+        - Arn: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:thera-pipeline-alerts-${Environment}'
+          Id: 'WeeklyPipelineErrorTarget'
+          Input: !Sub |
+            {
+              "subject": "Thera Pipeline Weekly ML Execution Failed",
+              "message": "Weekly ML pipeline execution has failed. Please check the Step Functions console for details.",
+              "environment": "${Environment}",
+              "execution_arn": "<aws.states.execution-arn>",
+              "failure_reason": "<aws.states.input>",
+              "pipeline_type": "ml_training_and_evaluation"
+            }
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'Weekly ML Pipeline Error Handling'
+
+  # EventBridge Rule for Weekly Success Notifications
+  WeeklyPipelineSuccessRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: !Sub 'thera-pipeline-weekly-success-rule-${Environment}'
+      Description: 'Handles weekly ML pipeline execution success notifications'
+      EventPattern:
+        source:
+          - 'aws.states'
+        detail-type:
+          - 'Step Functions Execution Status Change'
+        detail:
+          stateMachineArn:
+            - !Ref WeeklyStateMachineArn
+          status:
+            - 'SUCCEEDED'
+      State: 'ENABLED'
+      Targets:
+        - Arn: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:thera-pipeline-alerts-${Environment}'
+          Id: 'WeeklyPipelineSuccessTarget'
+          Input: !Sub |
+            {
+              "subject": "Thera Pipeline Weekly ML Execution Completed Successfully",
+              "message": "Weekly ML pipeline execution has completed successfully. New models have been trained and evaluated.",
+              "environment": "${Environment}",
+              "execution_arn": "<aws.states.execution-arn>",
+              "execution_duration": "<aws.states.execution-duration>",
+              "pipeline_type": "ml_training_and_evaluation"
+            }
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'Weekly ML Pipeline Success Notification'
+
+  # EventBridge Rule for Model Performance Alerts
+  ModelPerformanceAlertRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: !Sub 'thera-pipeline-model-performance-alert-rule-${Environment}'
+      Description: 'Handles model performance alerts and notifications'
+      EventPattern:
+        source:
+          - 'thera.ml'
+        detail-type:
+          - 'Model Performance Alert'
+        detail:
+          environment:
+            - !Ref Environment
+          performance_level:
+            - 'low'
+            - 'medium'
+      State: 'ENABLED'
+      Targets:
+        - Arn: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:thera-pipeline-alerts-${Environment}'
+          Id: 'ModelPerformanceAlertTarget'
+          Input: !Sub |
+            {
+              "subject": "Thera Pipeline Model Performance Alert",
+              "message": "Model performance alert: <detail.performance_level> performance detected. Please review model training data and parameters.",
+              "environment": "${Environment}",
+              "performance_level": "<detail.performance_level>",
+              "model_metrics": "<detail.model_metrics>",
+              "recommendations": "<detail.recommendations>"
+            }
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'Model Performance Alerting'
+
+  # CloudWatch Log Group for Weekly EventBridge
+  WeeklyEventBridgeLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/events/thera-pipeline-weekly-${Environment}'
+      RetentionInDays: 30
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'Weekly EventBridge Execution Logs'
+
+  # CloudWatch Alarms for Weekly EventBridge
+  WeeklyEventBridgeRuleFailureAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'thera-pipeline-weekly-eventbridge-failures-${Environment}'
+      AlarmDescription: 'Alarm for weekly EventBridge rule execution failures'
+      MetricName: FailedInvocations
+      Namespace: AWS/Events
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: RuleName
+          Value: !Ref WeeklyPipelineRule
+
+  WeeklyEventBridgeRuleSuccessAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'thera-pipeline-weekly-eventbridge-success-${Environment}'
+      AlarmDescription: 'Alarm for weekly EventBridge rule execution success rate'
+      MetricName: SuccessfulInvocations
+      Namespace: AWS/Events
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: RuleName
+          Value: !Ref WeeklyPipelineRule
+
+  # Custom CloudWatch metrics for ML pipeline performance
+  MLPipelinePerformanceAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'thera-pipeline-weekly-ml-performance-${Environment}'
+      AlarmDescription: 'Alarm when ML pipeline performance is low'
+      MetricName: MLPipelinePerformance
+      Namespace: Thera/ML
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 0.7  # 70% performance threshold
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+  WeeklyPipelineRuleArn:
+    Description: 'ARN of the weekly pipeline EventBridge rule'
+    Value: !Ref WeeklyPipelineRule
+    Export:
+      Name: !Sub '${AWS::StackName}-WeeklyPipelineRuleArn'
+
+  WeeklyPipelineRuleName:
+    Description: 'Name of the weekly pipeline EventBridge rule'
+    Value: !Ref WeeklyPipelineRule
+    Export:
+      Name: !Sub '${AWS::StackName}-WeeklyPipelineRuleName'
+
+  WeeklyPipelineManualRuleArn:
+    Description: 'ARN of the weekly pipeline manual EventBridge rule'
+    Value: !Ref WeeklyPipelineManualRule
+    Export:
+      Name: !Sub '${AWS::StackName}-WeeklyPipelineManualRuleArn'
+
+  ModelPerformanceAlertRuleArn:
+    Description: 'ARN of the model performance alert EventBridge rule'
+    Value: !Ref ModelPerformanceAlertRule
+    Export:
+      Name: !Sub '${AWS::StackName}-ModelPerformanceAlertRuleArn'
+
+  WeeklyEventBridgeLogGroupArn:
+    Description: 'ARN of the weekly EventBridge CloudWatch Log Group'
+    Value: !GetAtt WeeklyEventBridgeLogGroup.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-WeeklyEventBridgeLogGroupArn'

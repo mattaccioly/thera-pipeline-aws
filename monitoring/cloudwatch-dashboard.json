@@ -1,0 +1,202 @@
+{
+  "widgets": [
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 0,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          ["AWS/Lambda", "Duration", "FunctionName", "thera-pipeline-prod-apollo-delta-pull"],
+          [".", "Duration", ".", "thera-pipeline-prod-athena-ctas-bronze-silver"],
+          [".", "Duration", ".", "thera-pipeline-prod-domain-health-gate"],
+          [".", "Duration", ".", "thera-pipeline-prod-firecrawl-orchestrator"],
+          [".", "Duration", ".", "thera-pipeline-prod-athena-ctas-silver-gold"],
+          [".", "Duration", ".", "thera-pipeline-prod-embeddings-batch"],
+          [".", "Duration", ".", "thera-pipeline-prod-ams-computation"],
+          [".", "Duration", ".", "thera-pipeline-prod-dynamodb-publisher"]
+        ],
+        "view": "timeSeries",
+        "stacked": false,
+        "region": "us-east-1",
+        "title": "Lambda Function Duration",
+        "period": 300,
+        "stat": "Average"
+      }
+    },
+    {
+      "type": "metric",
+      "x": 12,
+      "y": 0,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          ["AWS/Lambda", "Errors", "FunctionName", "thera-pipeline-prod-apollo-delta-pull"],
+          [".", "Errors", ".", "thera-pipeline-prod-athena-ctas-bronze-silver"],
+          [".", "Errors", ".", "thera-pipeline-prod-domain-health-gate"],
+          [".", "Errors", ".", "thera-pipeline-prod-firecrawl-orchestrator"],
+          [".", "Errors", ".", "thera-pipeline-prod-athena-ctas-silver-gold"],
+          [".", "Errors", ".", "thera-pipeline-prod-embeddings-batch"],
+          [".", "Errors", ".", "thera-pipeline-prod-ams-computation"],
+          [".", "Errors", ".", "thera-pipeline-prod-dynamodb-publisher"]
+        ],
+        "view": "timeSeries",
+        "stacked": false,
+        "region": "us-east-1",
+        "title": "Lambda Function Errors",
+        "period": 300,
+        "stat": "Sum"
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 6,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          ["AWS/States", "ExecutionsStarted", "StateMachineArn", "arn:aws:states:us-east-1:ACCOUNT:stateMachine:thera-pipeline-daily-prod"],
+          [".", "ExecutionsSucceeded", ".", "."],
+          [".", "ExecutionsFailed", ".", "."],
+          [".", "ExecutionsAborted", ".", "."]
+        ],
+        "view": "timeSeries",
+        "stacked": false,
+        "region": "us-east-1",
+        "title": "Step Functions Daily Pipeline",
+        "period": 300,
+        "stat": "Sum"
+      }
+    },
+    {
+      "type": "metric",
+      "x": 12,
+      "y": 6,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          ["AWS/States", "ExecutionsStarted", "StateMachineArn", "arn:aws:states:us-east-1:ACCOUNT:stateMachine:thera-pipeline-weekly-prod"],
+          [".", "ExecutionsSucceeded", ".", "."],
+          [".", "ExecutionsFailed", ".", "."],
+          [".", "ExecutionsAborted", ".", "."]
+        ],
+        "view": "timeSeries",
+        "stacked": false,
+        "region": "us-east-1",
+        "title": "Step Functions Weekly Pipeline",
+        "period": 300,
+        "stat": "Sum"
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 12,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          ["AWS/Athena", "DataScannedInBytes", "WorkGroup", "primary"],
+          [".", "QueryExecutions", ".", "."],
+          [".", "QueryQueueTime", ".", "."]
+        ],
+        "view": "timeSeries",
+        "stacked": false,
+        "region": "us-east-1",
+        "title": "Athena Performance",
+        "period": 300,
+        "stat": "Sum"
+      }
+    },
+    {
+      "type": "metric",
+      "x": 12,
+      "y": 12,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          ["AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", "thera-companies-prod"],
+          [".", "ConsumedWriteCapacityUnits", ".", "."],
+          [".", "ThrottledRequests", ".", "."]
+        ],
+        "view": "timeSeries",
+        "stacked": false,
+        "region": "us-east-1",
+        "title": "DynamoDB Performance",
+        "period": 300,
+        "stat": "Sum"
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 18,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          ["AWS/S3", "BucketSizeBytes", "BucketName", "thera-pipeline-prod", "StorageType", "StandardStorage"],
+          [".", "NumberOfObjects", ".", ".", ".", "."]
+        ],
+        "view": "timeSeries",
+        "stacked": false,
+        "region": "us-east-1",
+        "title": "S3 Storage",
+        "period": 86400,
+        "stat": "Average"
+      }
+    },
+    {
+      "type": "metric",
+      "x": 12,
+      "y": 18,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          ["AWS/Events", "SuccessfulInvocations", "RuleName", "thera-pipeline-daily-rule"],
+          [".", "FailedInvocations", ".", "."],
+          [".", "SuccessfulInvocations", ".", "thera-pipeline-weekly-rule"],
+          [".", "FailedInvocations", ".", "."]
+        ],
+        "view": "timeSeries",
+        "stacked": false,
+        "region": "us-east-1",
+        "title": "EventBridge Rules",
+        "period": 300,
+        "stat": "Sum"
+      }
+    },
+    {
+      "type": "log",
+      "x": 0,
+      "y": 24,
+      "width": 24,
+      "height": 6,
+      "properties": {
+        "query": "SOURCE '/aws/lambda/thera-pipeline-prod-apollo-delta-pull' | fields @timestamp, @message\n| filter @message like /ERROR/\n| sort @timestamp desc\n| limit 20",
+        "region": "us-east-1",
+        "title": "Recent Lambda Errors",
+        "view": "table"
+      }
+    },
+    {
+      "type": "log",
+      "x": 0,
+      "y": 30,
+      "width": 24,
+      "height": 6,
+      "properties": {
+        "query": "SOURCE '/aws/stepfunctions/thera-pipeline-daily-prod' | fields @timestamp, @message\n| filter @message like /ERROR/ or @message like /FAILED/\n| sort @timestamp desc\n| limit 20",
+        "region": "us-east-1",
+        "title": "Recent Step Functions Errors",
+        "view": "table"
+      }
+    }
+  ]
+}

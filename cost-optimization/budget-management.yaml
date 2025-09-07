@@ -1,0 +1,351 @@
+# Thera Pipeline Budget Management Configuration
+# This file defines budget alerts and cost management for the Thera Pipeline
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Budget management and cost alerts for Thera Pipeline'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, staging, prod]
+    Description: Environment name
+  
+  MonthlyBudgetLimit:
+    Type: Number
+    Default: 1000
+    Description: Monthly budget limit in USD
+  
+  AlertThresholds:
+    Type: CommaDelimitedList
+    Default: "80,90,100"
+    Description: Alert thresholds as percentages (comma-separated)
+
+Resources:
+  # Monthly Budget
+  MonthlyBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub "TheraPipeline-${Environment}-MonthlyBudget"
+        BudgetLimit:
+          Amount: !Ref MonthlyBudgetLimit
+          Unit: USD
+        TimeUnit: MONTHLY
+        BudgetType: COST
+        CostFilters:
+          Tag:
+            - Key: "Project"
+              Values: ["TheraPipeline"]
+            - Key: "Environment"
+              Values: [!Ref Environment]
+        BudgetLimit:
+          Amount: !Ref MonthlyBudgetLimit
+          Unit: USD
+        TimeUnit: MONTHLY
+        BudgetType: COST
+        CostFilters:
+          Service:
+            - "Amazon Lambda"
+            - "AWS Step Functions"
+            - "Amazon Athena"
+            - "Amazon S3"
+            - "Amazon DynamoDB"
+            - "Amazon EventBridge"
+            - "Amazon Bedrock"
+            - "AWS Systems Manager"
+            - "Amazon CloudWatch"
+
+  # Budget Alerts
+  BudgetAlert80:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub "TheraPipeline-${Environment}-BudgetAlert80"
+        BudgetLimit:
+          Amount: !Ref MonthlyBudgetLimit
+          Unit: USD
+        TimeUnit: MONTHLY
+        BudgetType: COST
+        CostFilters:
+          Tag:
+            - Key: "Project"
+              Values: ["TheraPipeline"]
+        NotificationsWithSubscribers:
+          - Notification:
+              NotificationType: ACTUAL
+              ComparisonOperator: GREATER_THAN
+              Threshold: 80
+              ThresholdType: PERCENTAGE
+            Subscribers:
+              - SubscriptionType: EMAIL
+                Address: !Ref AlertEmail
+          - Notification:
+              NotificationType: FORECASTED
+              ComparisonOperator: GREATER_THAN
+              Threshold: 80
+              ThresholdType: PERCENTAGE
+            Subscribers:
+              - SubscriptionType: EMAIL
+                Address: !Ref AlertEmail
+
+  BudgetAlert90:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub "TheraPipeline-${Environment}-BudgetAlert90"
+        BudgetLimit:
+          Amount: !Ref MonthlyBudgetLimit
+          Unit: USD
+        TimeUnit: MONTHLY
+        BudgetType: COST
+        CostFilters:
+          Tag:
+            - Key: "Project"
+              Values: ["TheraPipeline"]
+        NotificationsWithSubscribers:
+          - Notification:
+              NotificationType: ACTUAL
+              ComparisonOperator: GREATER_THAN
+              Threshold: 90
+              ThresholdType: PERCENTAGE
+            Subscribers:
+              - SubscriptionType: EMAIL
+                Address: !Ref AlertEmail
+          - Notification:
+              NotificationType: FORECASTED
+              ComparisonOperator: GREATER_THAN
+              Threshold: 90
+              ThresholdType: PERCENTAGE
+            Subscribers:
+              - SubscriptionType: EMAIL
+                Address: !Ref AlertEmail
+
+  BudgetAlert100:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub "TheraPipeline-${Environment}-BudgetAlert100"
+        BudgetLimit:
+          Amount: !Ref MonthlyBudgetLimit
+          Unit: USD
+        TimeUnit: MONTHLY
+        BudgetType: COST
+        CostFilters:
+          Tag:
+            - Key: "Project"
+              Values: ["TheraPipeline"]
+        NotificationsWithSubscribers:
+          - Notification:
+              NotificationType: ACTUAL
+              ComparisonOperator: GREATER_THAN
+              Threshold: 100
+              ThresholdType: PERCENTAGE
+            Subscribers:
+              - SubscriptionType: EMAIL
+                Address: !Ref AlertEmail
+          - Notification:
+              NotificationType: FORECASTED
+              ComparisonOperator: GREATER_THAN
+              Threshold: 100
+              ThresholdType: PERCENTAGE
+            Subscribers:
+              - SubscriptionType: EMAIL
+                Address: !Ref AlertEmail
+
+  # Cost Allocation Tags
+  CostAllocationTags:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub "TheraPipeline-${Environment}-CostAllocation"
+        BudgetLimit:
+          Amount: !Ref MonthlyBudgetLimit
+          Unit: USD
+        TimeUnit: MONTHLY
+        BudgetType: COST
+        CostFilters:
+          Tag:
+            - Key: "Project"
+              Values: ["TheraPipeline"]
+            - Key: "Environment"
+              Values: [!Ref Environment]
+            - Key: "CostCenter"
+              Values: ["DataEngineering"]
+            - Key: "Owner"
+              Values: ["DataTeam"]
+
+  # Service-specific Budgets
+  LambdaBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub "TheraPipeline-${Environment}-LambdaBudget"
+        BudgetLimit:
+          Amount: 200
+          Unit: USD
+        TimeUnit: MONTHLY
+        BudgetType: COST
+        CostFilters:
+          Service:
+            - "Amazon Lambda"
+        NotificationsWithSubscribers:
+          - Notification:
+              NotificationType: ACTUAL
+              ComparisonOperator: GREATER_THAN
+              Threshold: 80
+              ThresholdType: PERCENTAGE
+            Subscribers:
+              - SubscriptionType: EMAIL
+                Address: !Ref AlertEmail
+
+  StepFunctionsBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub "TheraPipeline-${Environment}-StepFunctionsBudget"
+        BudgetLimit:
+          Amount: 100
+          Unit: USD
+        TimeUnit: MONTHLY
+        BudgetType: COST
+        CostFilters:
+          Service:
+            - "AWS Step Functions"
+        NotificationsWithSubscribers:
+          - Notification:
+              NotificationType: ACTUAL
+              ComparisonOperator: GREATER_THAN
+              Threshold: 80
+              ThresholdType: PERCENTAGE
+            Subscribers:
+              - SubscriptionType: EMAIL
+                Address: !Ref AlertEmail
+
+  AthenaBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub "TheraPipeline-${Environment}-AthenaBudget"
+        BudgetLimit:
+          Amount: 50
+          Unit: USD
+        TimeUnit: MONTHLY
+        BudgetType: COST
+        CostFilters:
+          Service:
+            - "Amazon Athena"
+        NotificationsWithSubscribers:
+          - Notification:
+              NotificationType: ACTUAL
+              ComparisonOperator: GREATER_THAN
+              Threshold: 80
+              ThresholdType: PERCENTAGE
+            Subscribers:
+              - SubscriptionType: EMAIL
+                Address: !Ref AlertEmail
+
+  S3Budget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub "TheraPipeline-${Environment}-S3Budget"
+        BudgetLimit:
+          Amount: 100
+          Unit: USD
+        TimeUnit: MONTHLY
+        BudgetType: COST
+        CostFilters:
+          Service:
+            - "Amazon S3"
+        NotificationsWithSubscribers:
+          - Notification:
+              NotificationType: ACTUAL
+              ComparisonOperator: GREATER_THAN
+              Threshold: 80
+              ThresholdType: PERCENTAGE
+            Subscribers:
+              - SubscriptionType: EMAIL
+                Address: !Ref AlertEmail
+
+  DynamoDBBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub "TheraPipeline-${Environment}-DynamoDBBudget"
+        BudgetLimit:
+          Amount: 150
+          Unit: USD
+        TimeUnit: MONTHLY
+        BudgetType: COST
+        CostFilters:
+          Service:
+            - "Amazon DynamoDB"
+        NotificationsWithSubscribers:
+          - Notification:
+              NotificationType: ACTUAL
+              ComparisonOperator: GREATER_THAN
+              Threshold: 80
+              ThresholdType: PERCENTAGE
+            Subscribers:
+              - SubscriptionType: EMAIL
+                Address: !Ref AlertEmail
+
+  # Cost Anomaly Detection
+  CostAnomalyDetector:
+    Type: AWS::CE::AnomalyDetector
+    Properties:
+      AnomalyDetectorName: !Sub "TheraPipeline-${Environment}-AnomalyDetector"
+      AnomalyDetectorType: DIMENSIONAL
+      MonitorType: DIMENSIONAL
+      Dimension: SERVICE
+      MatchOptions:
+        - EQUALS
+      Values:
+        - "Amazon Lambda"
+        - "AWS Step Functions"
+        - "Amazon Athena"
+        - "Amazon S3"
+        - "Amazon DynamoDB"
+        - "Amazon EventBridge"
+        - "Amazon Bedrock"
+        - "AWS Systems Manager"
+        - "Amazon CloudWatch"
+
+  # Cost Reports
+  CostReport:
+    Type: AWS::CE::CostCategory
+    Properties:
+      Name: !Sub "TheraPipeline-${Environment}-CostCategory"
+      Rules:
+        - Value: "TheraPipeline"
+          Rule:
+            Dimensions:
+              Key: TAG
+              Values:
+                - "Project"
+        - Value: !Ref Environment
+          Rule:
+            Dimensions:
+              Key: TAG
+              Values:
+                - "Environment"
+
+Outputs:
+  MonthlyBudgetArn:
+    Description: ARN of the monthly budget
+    Value: !Ref MonthlyBudget
+    Export:
+      Name: !Sub "${AWS::StackName}-MonthlyBudgetArn"
+
+  BudgetAlertEmail:
+    Description: Email address for budget alerts
+    Value: !Ref AlertEmail
+    Export:
+      Name: !Sub "${AWS::StackName}-BudgetAlertEmail"
+
+  CostAnomalyDetectorArn:
+    Description: ARN of the cost anomaly detector
+    Value: !Ref CostAnomalyDetector
+    Export:
+      Name: !Sub "${AWS::StackName}-CostAnomalyDetectorArn"

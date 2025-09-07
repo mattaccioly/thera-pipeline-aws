@@ -1,0 +1,81 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Error Handling and Retry Policies Configuration for Thera Pipeline'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: 'prod'
+    AllowedValues: ['dev', 'staging', 'prod']
+    Description: 'Environment name'
+
+Resources:
+  # CloudWatch Log Groups for Error Tracking
+  ErrorTrackingLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/thera-pipeline/error-tracking-${Environment}'
+      RetentionInDays: 30
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'Error Tracking and Analysis'
+
+  # SNS Topic for Critical Errors
+  CriticalErrorTopic:
+    Type: 'AWS::SNS::Topic'
+    Properties:
+      TopicName: !Sub 'thera-pipeline-critical-errors-${Environment}'
+      DisplayName: !Sub 'Critical Errors - ${Environment}'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'Critical Error Notifications'
+
+  # CloudWatch Alarms for Error Rates
+  HighErrorRateAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'thera-pipeline-high-error-rate-${Environment}'
+      AlarmDescription: 'Alarm when pipeline error rate exceeds threshold'
+      MetricName: ErrorRate
+      Namespace: Thera/Pipeline
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 0.1  # 10% error rate
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  # Dead Letter Queue for Failed Messages
+  DeadLetterQueue:
+    Type: 'AWS::SQS::Queue'
+    Properties:
+      QueueName: !Sub 'thera-pipeline-dlq-${Environment}'
+      MessageRetentionPeriod: 1209600  # 14 days
+      VisibilityTimeoutSeconds: 300
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'Dead Letter Queue for Failed Messages'
+
+Outputs:
+  ErrorTrackingLogGroupArn:
+    Description: 'ARN of the error tracking log group'
+    Value: !GetAtt ErrorTrackingLogGroup.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ErrorTrackingLogGroupArn'
+
+  CriticalErrorTopicArn:
+    Description: 'ARN of the critical error SNS topic'
+    Value: !Ref CriticalErrorTopic
+    Export:
+      Name: !Sub '${AWS::StackName}-CriticalErrorTopicArn'
+
+  DeadLetterQueueArn:
+    Description: 'ARN of the dead letter queue'
+    Value: !GetAtt DeadLetterQueue.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-DeadLetterQueueArn'

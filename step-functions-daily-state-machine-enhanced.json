@@ -1,0 +1,337 @@
+{
+  "Comment": "Thera Pipeline Daily State Machine - Enhanced with Advanced Summarization",
+  "StartAt": "ApolloDeltaPull",
+  "States": {
+    "ApolloDeltaPull": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-apollo-delta-pull-${Environment}",
+      "Comment": "Step 1: Pull delta data from Apollo API with throttling",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "ApolloDeltaPullFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "AthenaCTASBronzeSilver",
+      "ResultPath": "$.apolloDeltaPull"
+    },
+    "ApolloDeltaPullFailure": {
+      "Type": "Fail",
+      "Comment": "Apollo Delta Pull failed - critical for pipeline",
+      "Cause": "Apollo Delta Pull step failed and could not be recovered"
+    },
+    "AthenaCTASBronzeSilver": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-athena-ctas-bronze-silver-${Environment}",
+      "Comment": "Step 2: Transform BRONZE data to SILVER layer",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 3,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "AthenaCTASBronzeSilverFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "DomainHealthGate",
+      "ResultPath": "$.athenaCTASBronzeSilver"
+    },
+    "AthenaCTASBronzeSilverFailure": {
+      "Type": "Fail",
+      "Comment": "Athena CTAS BRONZE→SILVER failed - critical for pipeline",
+      "Cause": "Athena CTAS BRONZE→SILVER step failed and could not be recovered"
+    },
+    "DomainHealthGate": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-domain-health-gate-${Environment}",
+      "Comment": "Step 3: Validate domain health scores",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "DomainHealthGateFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "FirecrawlOrchestrator",
+      "ResultPath": "$.domainHealthGate"
+    },
+    "DomainHealthGateFailure": {
+      "Type": "Fail",
+      "Comment": "Domain Health Gate failed - critical for pipeline",
+      "Cause": "Domain Health Gate step failed and could not be recovered"
+    },
+    "FirecrawlOrchestrator": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-firecrawl-orchestrator-${Environment}",
+      "Comment": "Step 4: Orchestrate Firecrawl web scraping with concurrency control",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 15,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "FirecrawlOrchestratorFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "AthenaCTASSilverGold",
+      "ResultPath": "$.firecrawlOrchestrator"
+    },
+    "FirecrawlOrchestratorFailure": {
+      "Type": "Fail",
+      "Comment": "Firecrawl Orchestrator failed - critical for pipeline",
+      "Cause": "Firecrawl Orchestrator step failed and could not be recovered"
+    },
+    "AthenaCTASSilverGold": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-athena-ctas-silver-gold-${Environment}",
+      "Comment": "Step 5: Transform SILVER data to GOLD layer and build startup profiles",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 3,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "AthenaCTASSilverGoldFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "AdvancedSummarization",
+      "ResultPath": "$.athenaCTASSilverGold"
+    },
+    "AthenaCTASSilverGoldFailure": {
+      "Type": "Fail",
+      "Comment": "Athena CTAS SILVER→GOLD failed - critical for pipeline",
+      "Cause": "Athena CTAS SILVER→GOLD step failed and could not be recovered"
+    },
+    "AdvancedSummarization": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-advanced-summarization-${Environment}",
+      "Comment": "Step 6: Generate advanced LLM-powered summaries and business intelligence",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 15,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "AdvancedSummarizationFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "EmbeddingsBatch",
+      "ResultPath": "$.advancedSummarization"
+    },
+    "AdvancedSummarizationFailure": {
+      "Type": "Fail",
+      "Comment": "Advanced Summarization failed - non-critical, pipeline can continue",
+      "Cause": "Advanced Summarization step failed but pipeline can continue without it"
+    },
+    "EmbeddingsBatch": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-embeddings-batch-${Environment}",
+      "Comment": "Step 7: Generate embeddings using Bedrock for changed profile text",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 15,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "EmbeddingsBatchFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "AMSComputation",
+      "ResultPath": "$.embeddingsBatch"
+    },
+    "EmbeddingsBatchFailure": {
+      "Type": "Fail",
+      "Comment": "Embeddings Batch failed - critical for pipeline",
+      "Cause": "Embeddings Batch step failed and could not be recovered"
+    },
+    "AMSComputation": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-ams-computation-${Environment}",
+      "Comment": "Step 8: Compute Automated Matching Scores between companies",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 15,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "AMSComputationFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "DynamoDBPublisher",
+      "ResultPath": "$.amsComputation"
+    },
+    "AMSComputationFailure": {
+      "Type": "Fail",
+      "Comment": "AMS Computation failed - critical for pipeline",
+      "Cause": "AMS Computation step failed and could not be recovered"
+    },
+    "DynamoDBPublisher": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-dynamodb-publisher-${Environment}",
+      "Comment": "Step 9: Publish read models to DynamoDB for fast access",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "DynamoDBPublisherFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "CostMonitoring",
+      "ResultPath": "$.dynamoDBPublisher"
+    },
+    "DynamoDBPublisherFailure": {
+      "Type": "Fail",
+      "Comment": "DynamoDB Publisher failed - critical for pipeline",
+      "Cause": "DynamoDB Publisher step failed and could not be recovered"
+    },
+    "CostMonitoring": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-cost-monitor-${Environment}",
+      "Comment": "Step 10: Monitor costs and optimize cache",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "CostMonitoringFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "PipelineSuccess",
+      "ResultPath": "$.costMonitoring"
+    },
+    "CostMonitoringFailure": {
+      "Type": "Pass",
+      "Comment": "Cost monitoring failed - non-critical, continue to success",
+      "Next": "PipelineSuccess"
+    },
+    "PipelineSuccess": {
+      "Type": "Succeed",
+      "Comment": "Daily pipeline completed successfully with advanced summarization",
+      "OutputPath": "$"
+    }
+  },
+  "TimeoutSeconds": 9000,
+  "Comment": "Daily pipeline timeout set to 2.5 hours to accommodate advanced summarization"
+}

@@ -1,0 +1,245 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Weekly ML Trainer Lambda Function for Match Scoring'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Environment name
+  
+  CuratedBucket:
+    Type: String
+    Description: S3 bucket for curated data storage
+    Default: thera-curated
+  
+  ModelBucket:
+    Type: String
+    Description: S3 bucket for model storage
+    Default: thera-models
+  
+  AthenaDatabase:
+    Type: String
+    Description: Athena database name
+    Default: thera_analytics
+  
+  AthenaWorkgroup:
+    Type: String
+    Description: Athena workgroup name
+    Default: primary
+  
+  DaysLookback:
+    Type: Number
+    Default: 7
+    Description: Number of days to look back for training data
+    MinValue: 1
+    MaxValue: 30
+
+Resources:
+  # IAM Role for Lambda
+  WeeklyTrainerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Environment}-weekly-trainer-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: WeeklyTrainerPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # S3 permissions
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::${CuratedBucket}/*'
+                  - !Sub 'arn:aws:s3:::${ModelBucket}/*'
+                  - !Sub 'arn:aws:s3:::${CuratedBucket}'
+                  - !Sub 'arn:aws:s3:::${ModelBucket}'
+              
+              # Athena permissions
+              - Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:StopQueryExecution
+                  - athena:GetWorkGroup
+                Resource: '*'
+              
+              # CloudWatch permissions
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+
+  # Lambda Function
+  WeeklyTrainerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${Environment}-weekly-trainer'
+      CodeUri: .
+      Handler: lambda-weekly-trainer.lambda_handler
+      Runtime: python3.12
+      Timeout: 900  # 15 minutes
+      MemorySize: 2048  # Increased for ML training
+      Environment:
+        Variables:
+          CURATED_BUCKET: !Ref CuratedBucket
+          MODEL_BUCKET: !Ref ModelBucket
+          ATHENA_DATABASE: !Ref AthenaDatabase
+          ATHENA_WORKGROUP: !Ref AthenaWorkgroup
+          DAYS_LOOKBACK: !Ref DaysLookback
+          AWS_REGION: !Ref AWS::Region
+      Role: !GetAtt WeeklyTrainerRole.Arn
+      Events:
+        # Weekly trigger
+        WeeklyTrigger:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 16 * * SUN *)  # Weekly on Sunday at 4 PM UTC
+            Name: !Sub '${Environment}-weekly-trainer-trigger'
+            Description: 'Weekly trigger for ML model training'
+            Enabled: true
+      Tags:
+        Environment: !Ref Environment
+        Service: thera-pipeline
+        Component: weekly-trainer
+
+  # CloudWatch Log Group
+  WeeklyTrainerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${Environment}-weekly-trainer'
+      RetentionInDays: 14
+
+  # S3 Bucket for models (if not exists)
+  ModelBucketResource:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref ModelBucket
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: thera-pipeline
+        - Key: Component
+          Value: model-storage
+
+  # CloudWatch Alarms
+  WeeklyTrainerErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-weekly-trainer-errors'
+      AlarmDescription: 'Weekly Trainer Lambda errors'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref WeeklyTrainerFunction
+      TreatMissingData: notBreaching
+
+  WeeklyTrainerDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-weekly-trainer-duration'
+      AlarmDescription: 'Weekly Trainer Lambda duration too high'
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 600000  # 10 minutes in milliseconds
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref WeeklyTrainerFunction
+      TreatMissingData: notBreaching
+
+  # Custom metrics for business logic
+  WeeklyTrainerLowAUCAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-weekly-trainer-low-auc'
+      AlarmDescription: 'Weekly trainer AUC score is low'
+      MetricName: AUCScore
+      Namespace: TheraPipeline/WeeklyTraining
+      Statistic: Average
+      Period: 3600  # 1 hour
+      EvaluationPeriods: 1
+      Threshold: 0.6
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+
+  WeeklyTrainerInsufficientDataAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-weekly-trainer-insufficient-data'
+      AlarmDescription: 'Insufficient training data for weekly trainer'
+      MetricName: TrainingSamples
+      Namespace: TheraPipeline/WeeklyTraining
+      Statistic: Sum
+      Period: 3600  # 1 hour
+      EvaluationPeriods: 1
+      Threshold: 100
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+
+Outputs:
+  WeeklyTrainerFunctionArn:
+    Description: 'ARN of the Weekly Trainer Lambda function'
+    Value: !GetAtt WeeklyTrainerFunction.Arn
+    Export:
+      Name: !Sub '${Environment}-WeeklyTrainerFunctionArn'
+  
+  WeeklyTrainerRoleArn:
+    Description: 'ARN of the Weekly Trainer IAM role'
+    Value: !GetAtt WeeklyTrainerRole.Arn
+    Export:
+      Name: !Sub '${Environment}-WeeklyTrainerRoleArn'
+  
+  ModelBucketName:
+    Description: 'Name of the model S3 bucket'
+    Value: !Ref ModelBucketResource
+    Export:
+      Name: !Sub '${Environment}-ModelBucketName'
+  
+  ModelBucketArn:
+    Description: 'ARN of the model S3 bucket'
+    Value: !GetAtt ModelBucketResource.Arn
+    Export:
+      Name: !Sub '${Environment}-ModelBucketArn'

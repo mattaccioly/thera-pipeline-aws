@@ -1,0 +1,285 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Master Deployment Template for Thera Pipeline AWS Lambda Jobs'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Environment name
+  
+  # S3 Buckets
+  RawBucket:
+    Type: String
+    Description: S3 bucket for raw data storage
+    Default: thera-raw
+  
+  BronzeBucket:
+    Type: String
+    Description: S3 bucket for bronze layer data
+    Default: thera-bronze
+  
+  CuratedBucket:
+    Type: String
+    Description: S3 bucket for curated data storage
+    Default: thera-curated
+  
+  EmbeddingsBucket:
+    Type: String
+    Description: S3 bucket for embeddings storage
+    Default: thera-embeddings
+  
+  MetricsBucket:
+    Type: String
+    Description: S3 bucket for metrics storage
+    Default: thera-metrics
+  
+  ModelBucket:
+    Type: String
+    Description: S3 bucket for ML models
+    Default: thera-models
+  
+  # Athena Configuration
+  AthenaDatabase:
+    Type: String
+    Description: Athena database name
+    Default: thera_analytics
+  
+  AthenaWorkgroup:
+    Type: String
+    Description: Athena workgroup name
+    Default: primary
+  
+  # DynamoDB Tables
+  PublicTableName:
+    Type: String
+    Description: Name of the public DynamoDB table
+    Default: thera-startups-public
+  
+  PrivateTableName:
+    Type: String
+    Description: Name of the private DynamoDB table
+    Default: thera-startups-private
+  
+  # API Keys
+  ApolloSecretName:
+    Type: String
+    Description: Secrets Manager secret name for Apollo API key
+    Default: thera/apollo/api-key
+  
+  FirecrawlSecretName:
+    Type: String
+    Description: Secrets Manager secret name for Firecrawl API key
+    Default: thera/firecrawl/api-key
+  
+  # Bedrock Configuration
+  BedrockModelId:
+    Type: String
+    Description: Bedrock model ID for embeddings
+    Default: amazon.titan-embed-text-v1
+    AllowedValues: 
+      - amazon.titan-embed-text-v1
+      - amazon.titan-embed-text-v2
+
+Resources:
+  # Main Infrastructure
+  MainInfrastructure:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.amazonaws.com/${AWS::AccountId}-${AWS::Region}-thera-pipeline/main-infrastructure.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        RawBucket: !Ref RawBucket
+        BronzeBucket: !Ref BronzeBucket
+        CuratedBucket: !Ref CuratedBucket
+        EmbeddingsBucket: !Ref EmbeddingsBucket
+        MetricsBucket: !Ref MetricsBucket
+        ModelBucket: !Ref ModelBucket
+        AthenaDatabase: !Ref AthenaDatabase
+        AthenaWorkgroup: !Ref AthenaWorkgroup
+        PublicTableName: !Ref PublicTableName
+        PrivateTableName: !Ref PrivateTableName
+        ApolloSecretName: !Ref ApolloSecretName
+        FirecrawlSecretName: !Ref FirecrawlSecretName
+        BedrockModelId: !Ref BedrockModelId
+
+  # Apollo Delta Pull Lambda
+  ApolloDeltaPull:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.amazonaws.com/${AWS::AccountId}-${AWS::Region}-thera-pipeline/lambda-apollo-delta-pull.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        RawBucket: !Ref RawBucket
+        BronzeBucket: !Ref BronzeBucket
+        ApolloSecretName: !Ref ApolloSecretName
+      DependsOn: MainInfrastructure
+
+  # Domain Health Gate Lambda
+  DomainHealthGate:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.amazonaws.com/${AWS::AccountId}-${AWS::Region}-thera-pipeline/lambda-domain-health-gate.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        CuratedBucket: !Ref CuratedBucket
+        AthenaDatabase: !Ref AthenaDatabase
+        AthenaWorkgroup: !Ref AthenaWorkgroup
+      DependsOn: MainInfrastructure
+
+  # Firecrawl Orchestrator Lambda
+  FirecrawlOrchestrator:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.amazonaws.com/${AWS::AccountId}-${AWS::Region}-thera-pipeline/lambda-firecrawl-orchestrator.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        RawBucket: !Ref RawBucket
+        CuratedBucket: !Ref CuratedBucket
+        AthenaDatabase: !Ref AthenaDatabase
+        AthenaWorkgroup: !Ref AthenaWorkgroup
+        FirecrawlSecretName: !Ref FirecrawlSecretName
+      DependsOn: MainInfrastructure
+
+  # Embeddings Batch Lambda
+  EmbeddingsBatch:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.amazonaws.com/${AWS::AccountId}-${AWS::Region}-thera-pipeline/lambda-embeddings-batch.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        CuratedBucket: !Ref CuratedBucket
+        EmbeddingsBucket: !Ref EmbeddingsBucket
+        AthenaDatabase: !Ref AthenaDatabase
+        AthenaWorkgroup: !Ref AthenaWorkgroup
+        BedrockModelId: !Ref BedrockModelId
+      DependsOn: MainInfrastructure
+
+  # Matcher Lambda
+  Matcher:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.amazonaws.com/${AWS::AccountId}-${AWS::Region}-thera-pipeline/lambda-matcher.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        AthenaDatabase: !Ref AthenaDatabase
+        AthenaWorkgroup: !Ref AthenaWorkgroup
+        EmbeddingsBucket: !Ref EmbeddingsBucket
+        ModelBucket: !Ref ModelBucket
+        BedrockModelId: !Ref BedrockModelId
+      DependsOn: MainInfrastructure
+
+  # AMS Computation Lambda
+  AMSComputation:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.amazonaws.com/${AWS::AccountId}-${AWS::Region}-thera-pipeline/lambda-ams-computation.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        CuratedBucket: !Ref CuratedBucket
+        MetricsBucket: !Ref MetricsBucket
+        AthenaDatabase: !Ref AthenaDatabase
+        AthenaWorkgroup: !Ref AthenaWorkgroup
+      DependsOn: MainInfrastructure
+
+  # DynamoDB Publisher Lambda
+  DynamoDBPublisher:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.amazonaws.com/${AWS::AccountId}-${AWS::Region}-thera-pipeline/lambda-dynamodb-publisher.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        PublicTableName: !Ref PublicTableName
+        PrivateTableName: !Ref PrivateTableName
+        AthenaDatabase: !Ref AthenaDatabase
+        AthenaWorkgroup: !Ref AthenaWorkgroup
+      DependsOn: MainInfrastructure
+
+  # ML Training Lambda
+  MLTraining:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.amazonaws.com/${AWS::AccountId}-${AWS::Region}-thera-pipeline/lambda-ml-training.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        CuratedBucket: !Ref CuratedBucket
+        ModelBucket: !Ref ModelBucket
+        AthenaDatabase: !Ref AthenaDatabase
+        AthenaWorkgroup: !Ref AthenaWorkgroup
+      DependsOn: MainInfrastructure
+
+Outputs:
+  # Main Infrastructure Outputs
+  RawBucketName:
+    Description: 'Name of the raw data S3 bucket'
+    Value: !GetAtt MainInfrastructure.Outputs.RawBucketName
+    Export:
+      Name: !Sub '${Environment}-RawBucketName'
+  
+  CuratedBucketName:
+    Description: 'Name of the curated data S3 bucket'
+    Value: !GetAtt MainInfrastructure.Outputs.CuratedBucketName
+    Export:
+      Name: !Sub '${Environment}-CuratedBucketName'
+  
+  AthenaDatabaseName:
+    Description: 'Name of the Athena database'
+    Value: !GetAtt MainInfrastructure.Outputs.AthenaDatabaseName
+    Export:
+      Name: !Sub '${Environment}-AthenaDatabaseName'
+  
+  # Lambda Function ARNs
+  ApolloDeltaPullFunctionArn:
+    Description: 'ARN of the Apollo Delta Pull Lambda function'
+    Value: !GetAtt ApolloDeltaPull.Outputs.ApolloDeltaPullFunctionArn
+    Export:
+      Name: !Sub '${Environment}-ApolloDeltaPullFunctionArn'
+  
+  DomainHealthGateFunctionArn:
+    Description: 'ARN of the Domain Health Gate Lambda function'
+    Value: !GetAtt DomainHealthGate.Outputs.DomainHealthGateFunctionArn
+    Export:
+      Name: !Sub '${Environment}-DomainHealthGateFunctionArn'
+  
+  FirecrawlOrchestratorFunctionArn:
+    Description: 'ARN of the Firecrawl Orchestrator Lambda function'
+    Value: !GetAtt FirecrawlOrchestrator.Outputs.FirecrawlOrchestratorFunctionArn
+    Export:
+      Name: !Sub '${Environment}-FirecrawlOrchestratorFunctionArn'
+  
+  EmbeddingsBatchFunctionArn:
+    Description: 'ARN of the Embeddings Batch Lambda function'
+    Value: !GetAtt EmbeddingsBatch.Outputs.EmbeddingsBatchFunctionArn
+    Export:
+      Name: !Sub '${Environment}-EmbeddingsBatchFunctionArn'
+  
+  MatcherFunctionArn:
+    Description: 'ARN of the Matcher Lambda function'
+    Value: !GetAtt Matcher.Outputs.MatcherFunctionArn
+    Export:
+      Name: !Sub '${Environment}-MatcherFunctionArn'
+  
+  AMSComputationFunctionArn:
+    Description: 'ARN of the AMS Computation Lambda function'
+    Value: !GetAtt AMSComputation.Outputs.AMSComputationFunctionArn
+    Export:
+      Name: !Sub '${Environment}-AMSComputationFunctionArn'
+  
+  DynamoDBPublisherFunctionArn:
+    Description: 'ARN of the DynamoDB Publisher Lambda function'
+    Value: !GetAtt DynamoDBPublisher.Outputs.DynamoDBPublisherFunctionArn
+    Export:
+      Name: !Sub '${Environment}-DynamoDBPublisherFunctionArn'
+  
+  MLTrainingFunctionArn:
+    Description: 'ARN of the ML Training Lambda function'
+    Value: !GetAtt MLTraining.Outputs.MLTrainingFunctionArn
+    Export:
+      Name: !Sub '${Environment}-MLTrainingFunctionArn'
+  
+  # Dashboard URL
+  DashboardURL:
+    Description: 'URL of the CloudWatch Dashboard'
+    Value: !GetAtt MainInfrastructure.Outputs.DashboardURL
+    Export:
+      Name: !Sub '${Environment}-DashboardURL'

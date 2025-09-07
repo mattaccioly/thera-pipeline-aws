@@ -1,0 +1,189 @@
+{
+  "Comment": "Thera Pipeline Weekly State Machine - ML Training and Evaluation Workflow",
+  "StartAt": "WeeklyTrainer",
+  "States": {
+    "WeeklyTrainer": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Environment}-weekly-trainer",
+      "Comment": "Step 1: Train weekly ML model using scikit-learn logistic regression",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "WeeklyTrainerFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "AMSJob",
+      "ResultPath": "$.weeklyTrainer"
+    },
+    "WeeklyTrainerFailure": {
+      "Type": "Fail",
+      "Comment": "Weekly Trainer failed - critical for weekly pipeline",
+      "Cause": "Weekly Trainer step failed and could not be recovered"
+    },
+    "AMSJob": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Environment}-ams-job",
+      "Comment": "Step 2: Compute AMS metrics and write Parquet to S3",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 15,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "AMSJobFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "MLTraining",
+      "ResultPath": "$.amsJob"
+    },
+    "AMSJobFailure": {
+      "Type": "Fail",
+      "Comment": "AMS Job failed - critical for weekly pipeline",
+      "Cause": "AMS Job step failed and could not be recovered"
+    },
+    "MLTraining": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-ml-training-${Environment}",
+      "Comment": "Step 3: Train additional ML models (Logistic Regression and Random Forest) using scikit-learn",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "MLTrainingFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "EvaluationMetrics",
+      "ResultPath": "$.mlTraining"
+    },
+    "MLTrainingFailure": {
+      "Type": "Fail",
+      "Comment": "ML Training failed - critical for weekly pipeline",
+      "Cause": "ML Training step failed and could not be recovered"
+    },
+    "EvaluationMetrics": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-evaluation-metrics-${Environment}",
+      "Comment": "Step 2: Evaluate trained models and calculate AUC/PR metrics",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 15,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "EvaluationMetricsFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "ModelPerformanceCheck",
+      "ResultPath": "$.evaluationMetrics"
+    },
+    "EvaluationMetricsFailure": {
+      "Type": "Fail",
+      "Comment": "Evaluation Metrics failed - critical for weekly pipeline",
+      "Cause": "Evaluation Metrics step failed and could not be recovered"
+    },
+    "ModelPerformanceCheck": {
+      "Type": "Choice",
+      "Comment": "Step 3: Check if model performance meets minimum thresholds",
+      "Choices": [
+        {
+          "Variable": "$.evaluationMetrics.model_metrics[0].auc_score",
+          "NumericGreaterThan": 0.8,
+          "Next": "HighPerformanceModel"
+        },
+        {
+          "Variable": "$.evaluationMetrics.model_metrics[0].auc_score",
+          "NumericGreaterThan": 0.6,
+          "Next": "MediumPerformanceModel"
+        }
+      ],
+      "Default": "LowPerformanceModel"
+    },
+    "HighPerformanceModel": {
+      "Type": "Pass",
+      "Comment": "Model performance is high (AUC > 0.8) - proceed with deployment",
+      "Result": {
+        "performance_level": "high",
+        "message": "Model performance is excellent, ready for production deployment"
+      },
+      "Next": "WeeklyPipelineSuccess"
+    },
+    "MediumPerformanceModel": {
+      "Type": "Pass",
+      "Comment": "Model performance is medium (AUC 0.6-0.8) - proceed with caution",
+      "Result": {
+        "performance_level": "medium",
+        "message": "Model performance is acceptable, consider additional training data"
+      },
+      "Next": "WeeklyPipelineSuccess"
+    },
+    "LowPerformanceModel": {
+      "Type": "Pass",
+      "Comment": "Model performance is low (AUC < 0.6) - requires attention",
+      "Result": {
+        "performance_level": "low",
+        "message": "Model performance is below threshold, requires model improvement"
+      },
+      "Next": "WeeklyPipelineSuccess"
+    },
+    "WeeklyPipelineSuccess": {
+      "Type": "Succeed",
+      "Comment": "Weekly ML pipeline completed successfully",
+      "OutputPath": "$"
+    }
+  },
+  "TimeoutSeconds": 3600,
+  "Comment": "Weekly pipeline timeout set to 1 hour"
+}

@@ -1,0 +1,259 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Weekly Step Functions State Machine for ML Training and Evaluation'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: 'prod'
+    AllowedValues: ['dev', 'staging', 'prod']
+    Description: 'Environment name'
+  
+  StateMachineName:
+    Type: String
+    Default: 'thera-pipeline-weekly'
+    Description: 'Name of the Step Functions state machine'
+  
+  LogLevel:
+    Type: String
+    Default: 'INFO'
+    AllowedValues: ['DEBUG', 'INFO', 'WARN', 'ERROR']
+    Description: 'Log level for Step Functions execution'
+
+Resources:
+  # CloudWatch Log Group for Weekly Step Functions
+  WeeklyStepFunctionsLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/stepfunctions/${StateMachineName}-${Environment}'
+      RetentionInDays: 30
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'Weekly ML Pipeline Execution Logs'
+
+  # Weekly Step Functions State Machine
+  WeeklyPipelineStateMachine:
+    Type: 'AWS::StepFunctions::StateMachine'
+    Properties:
+      StateMachineName: !Sub '${StateMachineName}-${Environment}'
+      StateMachineType: 'STANDARD'
+      RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${StateMachineName}-execution-role-${Environment}'
+      DefinitionString: !Sub |
+        {
+          "Comment": "Thera Pipeline Weekly State Machine - ML Training and Evaluation Workflow",
+          "StartAt": "MLTraining",
+          "States": {
+            "MLTraining": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-ml-training-${Environment}",
+              "Comment": "Step 1: Train ML models (Logistic Regression and Random Forest) using scikit-learn",
+              "Retry": [
+                {
+                  "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+                  "IntervalSeconds": 10,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2.0
+                },
+                {
+                  "ErrorEquals": ["States.TaskFailed"],
+                  "IntervalSeconds": 30,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "Next": "MLTrainingFailure",
+                  "ResultPath": "$.error"
+                }
+              ],
+              "Next": "EvaluationMetrics",
+              "ResultPath": "$.mlTraining"
+            },
+            "MLTrainingFailure": {
+              "Type": "Fail",
+              "Comment": "ML Training failed - critical for weekly pipeline",
+              "Cause": "ML Training step failed and could not be recovered"
+            },
+            "EvaluationMetrics": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-evaluation-metrics-${Environment}",
+              "Comment": "Step 2: Evaluate trained models and calculate AUC/PR metrics",
+              "Retry": [
+                {
+                  "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+                  "IntervalSeconds": 5,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2.0
+                },
+                {
+                  "ErrorEquals": ["States.TaskFailed"],
+                  "IntervalSeconds": 15,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "Next": "EvaluationMetricsFailure",
+                  "ResultPath": "$.error"
+                }
+              ],
+              "Next": "ModelPerformanceCheck",
+              "ResultPath": "$.evaluationMetrics"
+            },
+            "EvaluationMetricsFailure": {
+              "Type": "Fail",
+              "Comment": "Evaluation Metrics failed - critical for weekly pipeline",
+              "Cause": "Evaluation Metrics step failed and could not be recovered"
+            },
+            "ModelPerformanceCheck": {
+              "Type": "Choice",
+              "Comment": "Step 3: Check if model performance meets minimum thresholds",
+              "Choices": [
+                {
+                  "Variable": "$.evaluationMetrics.model_metrics[0].auc_score",
+                  "NumericGreaterThan": 0.8,
+                  "Next": "HighPerformanceModel"
+                },
+                {
+                  "Variable": "$.evaluationMetrics.model_metrics[0].auc_score",
+                  "NumericGreaterThan": 0.6,
+                  "Next": "MediumPerformanceModel"
+                }
+              ],
+              "Default": "LowPerformanceModel"
+            },
+            "HighPerformanceModel": {
+              "Type": "Pass",
+              "Comment": "Model performance is high (AUC > 0.8) - proceed with deployment",
+              "Result": {
+                "performance_level": "high",
+                "message": "Model performance is excellent, ready for production deployment"
+              },
+              "Next": "WeeklyPipelineSuccess"
+            },
+            "MediumPerformanceModel": {
+              "Type": "Pass",
+              "Comment": "Model performance is medium (AUC 0.6-0.8) - proceed with caution",
+              "Result": {
+                "performance_level": "medium",
+                "message": "Model performance is acceptable, consider additional training data"
+              },
+              "Next": "WeeklyPipelineSuccess"
+            },
+            "LowPerformanceModel": {
+              "Type": "Pass",
+              "Comment": "Model performance is low (AUC < 0.6) - requires attention",
+              "Result": {
+                "performance_level": "low",
+                "message": "Model performance is below threshold, requires model improvement"
+              },
+              "Next": "WeeklyPipelineSuccess"
+            },
+            "WeeklyPipelineSuccess": {
+              "Type": "Succeed",
+              "Comment": "Weekly ML pipeline completed successfully",
+              "OutputPath": "$"
+            }
+          },
+          "TimeoutSeconds": 3600,
+          "Comment": "Weekly pipeline timeout set to 1 hour"
+        }
+      LoggingConfiguration:
+        Level: !Ref LogLevel
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt WeeklyStepFunctionsLogGroup.Arn
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'Weekly ML Training and Evaluation'
+
+  # CloudWatch Alarms for Weekly Step Functions
+  WeeklyStepFunctionsExecutionFailureAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'thera-pipeline-weekly-execution-failures-${Environment}'
+      AlarmDescription: 'Alarm for Weekly Step Functions execution failures'
+      MetricName: ExecutionsFailed
+      Namespace: AWS/States
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: StateMachineArn
+          Value: !Ref WeeklyPipelineStateMachine
+
+  WeeklyStepFunctionsExecutionDurationAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'thera-pipeline-weekly-execution-duration-${Environment}'
+      AlarmDescription: 'Alarm for Weekly Step Functions execution duration'
+      MetricName: ExecutionTime
+      Namespace: AWS/States
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1800000  # 30 minutes in milliseconds
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: StateMachineArn
+          Value: !Ref WeeklyPipelineStateMachine
+
+  WeeklyStepFunctionsExecutionThrottleAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'thera-pipeline-weekly-execution-throttles-${Environment}'
+      AlarmDescription: 'Alarm for Weekly Step Functions execution throttles'
+      MetricName: ExecutionsThrottled
+      Namespace: AWS/States
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: StateMachineArn
+          Value: !Ref WeeklyPipelineStateMachine
+
+  # Custom CloudWatch metrics for ML performance
+  MLModelPerformanceAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'thera-pipeline-weekly-low-model-performance-${Environment}'
+      AlarmDescription: 'Alarm when ML model performance is low'
+      MetricName: ModelAUCScore
+      Namespace: Thera/ML
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 0.6  # 60% AUC threshold
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+  WeeklyPipelineStateMachineArn:
+    Description: 'ARN of the Weekly Pipeline Step Functions state machine'
+    Value: !Ref WeeklyPipelineStateMachine
+    Export:
+      Name: !Sub '${AWS::StackName}-WeeklyPipelineStateMachineArn'
+
+  WeeklyPipelineStateMachineName:
+    Description: 'Name of the Weekly Pipeline Step Functions state machine'
+    Value: !Ref WeeklyPipelineStateMachine
+    Export:
+      Name: !Sub '${AWS::StackName}-WeeklyPipelineStateMachineName'
+
+  WeeklyStepFunctionsLogGroupArn:
+    Description: 'ARN of the Weekly Step Functions CloudWatch Log Group'
+    Value: !GetAtt WeeklyStepFunctionsLogGroup.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-WeeklyStepFunctionsLogGroupArn'

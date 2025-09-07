@@ -1,0 +1,301 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Matcher Lambda Function for Similarity Matching with Bedrock Embeddings'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Environment name
+  
+  AthenaDatabase:
+    Type: String
+    Description: Athena database name
+    Default: thera_analytics
+  
+  AthenaWorkgroup:
+    Type: String
+    Description: Athena workgroup name
+    Default: primary
+  
+  EmbeddingsBucket:
+    Type: String
+    Description: S3 bucket for embeddings storage
+    Default: thera-embeddings
+  
+  ModelBucket:
+    Type: String
+    Description: S3 bucket for ML models
+    Default: thera-models
+  
+  BedrockModelId:
+    Type: String
+    Description: Bedrock model ID for embeddings
+    Default: amazon.titan-embed-text-v1
+    AllowedValues: 
+      - amazon.titan-embed-text-v1
+      - amazon.titan-embed-text-v2
+  
+  MaxCandidates:
+    Type: Number
+    Default: 5000
+    Description: Maximum candidates to process
+    MinValue: 100
+    MaxValue: 50000
+  
+  TopResults:
+    Type: Number
+    Default: 20
+    Description: Number of top results to return
+    MinValue: 1
+    MaxValue: 100
+
+Resources:
+  # IAM Role for Lambda
+  MatcherRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Environment}-matcher-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: MatcherPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Athena permissions
+              - Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:StopQueryExecution
+                  - athena:GetWorkGroup
+                Resource: '*'
+              
+              # Bedrock permissions
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource: 
+                  - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}'
+              
+              # S3 permissions for models
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${ModelBucket}/*'
+              
+              # CloudWatch permissions
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+
+  # Lambda Function
+  MatcherFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${Environment}-matcher'
+      CodeUri: .
+      Handler: lambda-matcher.lambda_handler
+      Runtime: python3.12
+      Timeout: 300  # 5 minutes
+      MemorySize: 2048  # More memory for ML operations
+      Environment:
+        Variables:
+          ATHENA_DATABASE: !Ref AthenaDatabase
+          ATHENA_WORKGROUP: !Ref AthenaWorkgroup
+          EMBEDDINGS_BUCKET: !Ref EmbeddingsBucket
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+          MAX_CANDIDATES: !Ref MaxCandidates
+          TOP_RESULTS: !Ref TopResults
+          MODEL_BUCKET: !Ref ModelBucket
+          MODEL_KEY: match_lr/model.json
+          AWS_REGION: !Ref AWS::Region
+      Role: !GetAtt MatcherRole.Arn
+      Tags:
+        Environment: !Ref Environment
+        Service: thera-pipeline
+        Component: matcher
+
+  # CloudWatch Log Group
+  MatcherLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${Environment}-matcher'
+      RetentionInDays: 14
+
+  # CloudWatch Alarms
+  MatcherErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-matcher-errors'
+      AlarmDescription: 'Matcher Lambda errors'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref MatcherFunction
+      TreatMissingData: notBreaching
+
+  MatcherDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-matcher-duration'
+      AlarmDescription: 'Matcher Lambda duration too high'
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 240000  # 4 minutes in milliseconds
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref MatcherFunction
+      TreatMissingData: notBreaching
+
+  # Custom metrics for business logic
+  MatcherLowSimilarityAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-matcher-low-similarity'
+      AlarmDescription: 'Average similarity score is low'
+      MetricName: AverageSimilarity
+      Namespace: TheraPipeline/Matcher
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 0.3
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+
+  # API Gateway for HTTP access (optional)
+  MatcherApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub '${Environment}-matcher-api'
+      StageName: !Ref Environment
+      DefinitionBody:
+        openapi: 3.0.1
+        info:
+          title: Thera Matcher API
+          version: 1.0.0
+        paths:
+          /match:
+            post:
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MatcherFunction.Arn}/invocations'
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema:
+                      type: object
+                      properties:
+                        challenge_text:
+                          type: string
+                        industry:
+                          type: string
+                        country:
+                          type: string
+                      required:
+                        - challenge_text
+              responses:
+                '200':
+                  description: Successful match
+                  content:
+                    application/json:
+                      schema:
+                        type: object
+                        properties:
+                          message:
+                            type: string
+                          matches_found:
+                            type: integer
+                          average_similarity:
+                            type: number
+                          matches:
+                            type: array
+                            items:
+                              type: object
+                '500':
+                  description: Error
+                  content:
+                    application/json:
+                      schema:
+                        type: object
+                        properties:
+                          error:
+                            type: string
+
+  # Lambda permission for API Gateway
+  MatcherApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref MatcherFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${MatcherApi}/*/*'
+
+  # S3 Bucket for ML models (if not exists)
+  ModelBucketResource:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref ModelBucket
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: thera-pipeline
+        - Key: Component
+          Value: ml-models
+
+Outputs:
+  MatcherFunctionArn:
+    Description: 'ARN of the Matcher Lambda function'
+    Value: !GetAtt MatcherFunction.Arn
+    Export:
+      Name: !Sub '${Environment}-MatcherFunctionArn'
+  
+  MatcherRoleArn:
+    Description: 'ARN of the Matcher IAM role'
+    Value: !GetAtt MatcherRole.Arn
+    Export:
+      Name: !Sub '${Environment}-MatcherRoleArn'
+  
+  MatcherApiUrl:
+    Description: 'URL of the Matcher API Gateway'
+    Value: !Sub 'https://${MatcherApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+    Export:
+      Name: !Sub '${Environment}-MatcherApiUrl'
+  
+  ModelBucketName:
+    Description: 'Name of the ML models S3 bucket'
+    Value: !Ref ModelBucketResource
+    Export:
+      Name: !Sub '${Environment}-ModelBucketName'

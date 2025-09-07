@@ -1,0 +1,205 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Apollo Delta Pull Lambda Function with Rate Limiting'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Environment name
+  
+  RawBucket:
+    Type: String
+    Description: S3 bucket for raw data storage
+    Default: thera-raw
+  
+  BronzeBucket:
+    Type: String
+    Description: S3 bucket for bronze layer data
+    Default: thera-bronze
+  
+  ApolloSecretName:
+    Type: String
+    Description: Secrets Manager secret name for Apollo API key
+    Default: thera/apollo/api-key
+
+Resources:
+  # DynamoDB table for quota tracking
+  ApolloQuotaTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${Environment}-apollo-quota'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  # IAM Role for Lambda
+  ApolloDeltaPullRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Environment}-apollo-delta-pull-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ApolloDeltaPullPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # S3 permissions
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${RawBucket}/*'
+                  - !Sub 'arn:aws:s3:::${BronzeBucket}/*'
+              
+              # DynamoDB permissions
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource:
+                  - !GetAtt ApolloQuotaTable.Arn
+              
+              # Secrets Manager permissions
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ApolloSecretName}*'
+              
+              # CloudWatch permissions
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+
+  # Lambda Function
+  ApolloDeltaPullFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${Environment}-apollo-delta-pull'
+      CodeUri: s3://thera-pipeline-templates-dev-1757185742/lambda-apollo-delta-pull.py
+      Handler: lambda-apollo-delta-pull.lambda_handler
+      Runtime: python3.12
+      Timeout: 900  # 15 minutes
+      MemorySize: 512
+      Environment:
+        Variables:
+          APOLLO_QUOTA_TABLE: !Ref ApolloQuotaTable
+          RAW_BUCKET: !Ref RawBucket
+          BRONZE_BUCKET: !Ref BronzeBucket
+          APOLLO_SECRET_NAME: !Ref ApolloSecretName
+          AWS_REGION: !Ref AWS::Region
+      Role: !GetAtt ApolloDeltaPullRole.Arn
+      Events:
+        DailyTrigger:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 6 * * ? *)  # Daily at 6 AM UTC
+            Name: !Sub '${Environment}-apollo-daily-trigger'
+            Description: 'Daily trigger for Apollo delta pull'
+            Enabled: true
+      Tags:
+        Environment: !Ref Environment
+        Service: thera-pipeline
+        Component: apollo-delta-pull
+
+  # CloudWatch Log Group
+  ApolloDeltaPullLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${Environment}-apollo-delta-pull'
+      RetentionInDays: 14
+
+  # CloudWatch Alarms
+  ApolloDeltaPullErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-apollo-delta-pull-errors'
+      AlarmDescription: 'Apollo Delta Pull Lambda errors'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ApolloDeltaPullFunction
+      TreatMissingData: notBreaching
+
+  ApolloDeltaPullDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-apollo-delta-pull-duration'
+      AlarmDescription: 'Apollo Delta Pull Lambda duration too high'
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 600000  # 10 minutes in milliseconds
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ApolloDeltaPullFunction
+      TreatMissingData: notBreaching
+
+  # Custom metrics for business logic
+  ApolloItemsFetchedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-apollo-items-fetched-low'
+      AlarmDescription: 'Apollo items fetched count is low'
+      MetricName: ItemsFetched
+      Namespace: TheraPipeline/Apollo
+      Statistic: Sum
+      Period: 3600  # 1 hour
+      EvaluationPeriods: 1
+      Threshold: 10
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+  ApolloDeltaPullFunctionArn:
+    Description: 'ARN of the Apollo Delta Pull Lambda function'
+    Value: !GetAtt ApolloDeltaPullFunction.Arn
+    Export:
+      Name: !Sub '${Environment}-ApolloDeltaPullFunctionArn'
+  
+  ApolloQuotaTableName:
+    Description: 'Name of the Apollo quota tracking table'
+    Value: !Ref ApolloQuotaTable
+    Export:
+      Name: !Sub '${Environment}-ApolloQuotaTableName'
+  
+  ApolloDeltaPullRoleArn:
+    Description: 'ARN of the Apollo Delta Pull IAM role'
+    Value: !GetAtt ApolloDeltaPullRole.Arn
+    Export:
+      Name: !Sub '${Environment}-ApolloDeltaPullRoleArn'

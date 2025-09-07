@@ -1,0 +1,247 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'ML Training Lambda Function for Weekly Model Training with scikit-learn'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Environment name
+  
+  CuratedBucket:
+    Type: String
+    Description: S3 bucket for curated data storage
+    Default: thera-curated
+  
+  ModelBucket:
+    Type: String
+    Description: S3 bucket for ML models
+    Default: thera-models
+  
+  AthenaDatabase:
+    Type: String
+    Description: Athena database name
+    Default: thera_analytics
+  
+  AthenaWorkgroup:
+    Type: String
+    Description: Athena workgroup name
+    Default: primary
+  
+  DaysLookback:
+    Type: Number
+    Default: 14
+    Description: Number of days to look back for training data
+    MinValue: 7
+    MaxValue: 90
+
+Resources:
+  # IAM Role for Lambda
+  MLTrainingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Environment}-ml-training-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: MLTrainingPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # S3 permissions
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${CuratedBucket}/*'
+                  - !Sub 'arn:aws:s3:::${ModelBucket}/*'
+              
+              # Athena permissions
+              - Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:StopQueryExecution
+                  - athena:GetWorkGroup
+                Resource: '*'
+              
+              # CloudWatch permissions
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+
+  # Lambda Function
+  MLTrainingFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${Environment}-ml-training'
+      CodeUri: lambda-ml-training/
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.12
+      Timeout: 900  # 15 minutes
+      MemorySize: 3008  # More memory for ML operations
+      Environment:
+        Variables:
+          CURATED_BUCKET: !Ref CuratedBucket
+          MODEL_BUCKET: !Ref ModelBucket
+          ATHENA_DATABASE: !Ref AthenaDatabase
+          ATHENA_WORKGROUP: !Ref AthenaWorkgroup
+          MODEL_KEY: match_lr/model.json
+          DAYS_LOOKBACK: !Ref DaysLookback
+          AWS_REGION: !Ref AWS::Region
+      Role: !GetAtt MLTrainingRole.Arn
+      Events:
+        # Weekly trigger
+        WeeklyTrigger:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 18 ? * SUN *)  # Weekly on Sunday at 6 PM UTC
+            Name: !Sub '${Environment}-ml-weekly-trigger'
+            Description: 'Weekly trigger for ML model training'
+            Enabled: true
+      Tags:
+        Environment: !Ref Environment
+        Service: thera-pipeline
+        Component: ml-training
+
+  # CloudWatch Log Group
+  MLTrainingLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${Environment}-ml-training'
+      RetentionInDays: 14
+
+  # S3 Bucket for ML models (if not exists)
+  ModelBucketResource:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref ModelBucket
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: thera-pipeline
+        - Key: Component
+          Value: ml-models
+
+  # CloudWatch Alarms
+  MLTrainingErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-ml-training-errors'
+      AlarmDescription: 'ML Training Lambda errors'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref MLTrainingFunction
+      TreatMissingData: notBreaching
+
+  MLTrainingDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-ml-training-duration'
+      AlarmDescription: 'ML Training Lambda duration too high'
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 600000  # 10 minutes in milliseconds
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref MLTrainingFunction
+      TreatMissingData: notBreaching
+
+  # Custom metrics for business logic
+  MLTrainingLowAccuracyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-ml-training-low-accuracy'
+      AlarmDescription: 'ML model accuracy is low'
+      MetricName: Accuracy
+      Namespace: TheraPipeline/MLTraining
+      Statistic: Average
+      Period: 3600  # 1 hour
+      EvaluationPeriods: 1
+      Threshold: 0.6  # 60% accuracy threshold
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+
+  MLTrainingLowAUCalarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-ml-training-low-auc'
+      AlarmDescription: 'ML model AUC score is low'
+      MetricName: AUCScore
+      Namespace: TheraPipeline/MLTraining
+      Statistic: Average
+      Period: 3600  # 1 hour
+      EvaluationPeriods: 1
+      Threshold: 0.7  # 70% AUC threshold
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+
+  MLTrainingInsufficientDataAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-ml-training-insufficient-data'
+      AlarmDescription: 'Insufficient training data available'
+      MetricName: TrainingSamples
+      Namespace: TheraPipeline/MLTraining
+      Statistic: Sum
+      Period: 3600  # 1 hour
+      EvaluationPeriods: 1
+      Threshold: 100  # Less than 100 training samples
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+  MLTrainingFunctionArn:
+    Description: 'ARN of the ML Training Lambda function'
+    Value: !GetAtt MLTrainingFunction.Arn
+    Export:
+      Name: !Sub '${Environment}-MLTrainingFunctionArn'
+  
+  MLTrainingRoleArn:
+    Description: 'ARN of the ML Training IAM role'
+    Value: !GetAtt MLTrainingRole.Arn
+    Export:
+      Name: !Sub '${Environment}-MLTrainingRoleArn'
+  
+  ModelBucketName:
+    Description: 'Name of the ML models S3 bucket'
+    Value: !Ref ModelBucketResource
+    Export:
+      Name: !Sub '${Environment}-ModelBucketName'
+  
+  ModelBucketArn:
+    Description: 'ARN of the ML models S3 bucket'
+    Value: !GetAtt ModelBucketResource.Arn
+    Export:
+      Name: !Sub '${Environment}-ModelBucketArn'

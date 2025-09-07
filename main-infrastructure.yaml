@@ -1,0 +1,574 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Main Infrastructure Template for Thera Pipeline AWS Lambda Jobs'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Environment name
+  
+  # S3 Buckets
+  RawBucket:
+    Type: String
+    Description: S3 bucket for raw data storage
+    Default: thera-raw
+  
+  BronzeBucket:
+    Type: String
+    Description: S3 bucket for bronze layer data
+    Default: thera-bronze
+  
+  CuratedBucket:
+    Type: String
+    Description: S3 bucket for curated data storage
+    Default: thera-curated
+  
+  EmbeddingsBucket:
+    Type: String
+    Description: S3 bucket for embeddings storage
+    Default: thera-embeddings
+  
+  MetricsBucket:
+    Type: String
+    Description: S3 bucket for metrics storage
+    Default: thera-metrics
+  
+  ModelBucket:
+    Type: String
+    Description: S3 bucket for ML models
+    Default: thera-models
+  
+  # Athena Configuration
+  AthenaDatabase:
+    Type: String
+    Description: Athena database name
+    Default: thera_analytics
+  
+  AthenaWorkgroup:
+    Type: String
+    Description: Athena workgroup name
+    Default: primary
+  
+  # DynamoDB Tables
+  PublicTableName:
+    Type: String
+    Description: Name of the public DynamoDB table
+    Default: thera-startups-public
+  
+  PrivateTableName:
+    Type: String
+    Description: Name of the private DynamoDB table
+    Default: thera-startups-private
+  
+  # API Keys
+  ApolloSecretName:
+    Type: String
+    Description: Secrets Manager secret name for Apollo API key
+    Default: thera/apollo/api-key
+  
+  FirecrawlSecretName:
+    Type: String
+    Description: Secrets Manager secret name for Firecrawl API key
+    Default: thera/firecrawl/api-key
+  
+  # Bedrock Configuration
+  BedrockModelId:
+    Type: String
+    Description: Bedrock model ID for embeddings
+    Default: amazon.titan-embed-text-v1
+    AllowedValues: 
+      - amazon.titan-embed-text-v1
+      - amazon.titan-embed-text-v2
+
+Resources:
+  # S3 Buckets
+  RawBucketResource:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref RawBucket
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: thera-pipeline
+        - Key: Component
+          Value: raw-storage
+
+  BronzeBucketResource:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BronzeBucket
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: thera-pipeline
+        - Key: Component
+          Value: bronze-storage
+
+  CuratedBucketResource:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref CuratedBucket
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: thera-pipeline
+        - Key: Component
+          Value: curated-storage
+
+  EmbeddingsBucketResource:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref EmbeddingsBucket
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: thera-pipeline
+        - Key: Component
+          Value: embeddings-storage
+
+  MetricsBucketResource:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref MetricsBucket
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: thera-pipeline
+        - Key: Component
+          Value: metrics-storage
+
+  ModelBucketResource:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref ModelBucket
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: thera-pipeline
+        - Key: Component
+          Value: ml-models
+
+  # Athena Database
+  AthenaDatabaseResource:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Ref AthenaDatabase
+        Description: 'Thera Analytics Database'
+        Parameters:
+          'comment': 'Database for Thera pipeline analytics'
+
+  # Athena Workgroup
+  AthenaWorkgroupResource:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: !Sub '${Environment}-thera-analytics'
+      Description: 'Thera Analytics Workgroup'
+      WorkGroupConfiguration:
+        ResultConfiguration:
+          OutputLocation: !Sub 's3://${CuratedBucket}/athena-results/'
+        EnforceWorkGroupConfiguration: true
+        PublishCloudWatchMetricsEnabled: true
+        BytesScannedCutoffPerQuery: 1000000000  # 1GB
+        RequesterPaysEnabled: false
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: thera-pipeline
+        - Key: Component
+          Value: athena-workgroup
+
+  # DynamoDB Tables
+  PublicTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref PublicTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: company_key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: company_key
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: thera-pipeline
+        - Key: Component
+          Value: public-table
+
+  PrivateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref PrivateTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: company_key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: company_key
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: thera-pipeline
+        - Key: Component
+          Value: private-table
+
+  # Apollo Quota Table
+  ApolloQuotaTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${Environment}-apollo-quota'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: thera-pipeline
+        - Key: Component
+          Value: apollo-quota
+
+  # SSM Parameters
+  EmbeddingsWatermarkParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /thera/embeddings/watermark
+      Type: String
+      Value: !Sub '${AWS::StackName}-initial'
+      Description: 'Watermark timestamp for embeddings processing'
+      Tags:
+        Environment: !Ref Environment
+        Service: thera-pipeline
+        Component: embeddings-watermark
+
+  DynamoDBWatermarkParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /thera/dynamodb/watermark
+      Type: String
+      Value: !Sub '${AWS::StackName}-initial'
+      Description: 'Watermark timestamp for DynamoDB publishing'
+      Tags:
+        Environment: !Ref Environment
+        Service: thera-pipeline
+        Component: dynamodb-watermark
+
+  # CloudWatch Dashboard
+  TheraPipelineDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${Environment}-thera-pipeline-dashboard'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "TheraPipeline/Apollo", "ItemsFetched" ],
+                  [ "TheraPipeline/Apollo", "ApiCallsUsed" ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Apollo Data Fetching",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "TheraPipeline/DomainHealth", "DomainsChecked" ],
+                  [ "TheraPipeline/DomainHealth", "AverageHealthScore" ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Domain Health Checks",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "TheraPipeline/Firecrawl", "DomainsProcessed" ],
+                  [ "TheraPipeline/Firecrawl", "SuccessfulCrawls" ],
+                  [ "TheraPipeline/Firecrawl", "FailedCrawls" ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Firecrawl Processing",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "TheraPipeline/Embeddings", "ItemsProcessed" ],
+                  [ "TheraPipeline/Embeddings", "EmbeddingsGenerated" ],
+                  [ "TheraPipeline/Embeddings", "TotalCost" ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Embeddings Processing",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 12,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "TheraPipeline/Matcher", "CandidatesProcessed" ],
+                  [ "TheraPipeline/Matcher", "MatchesFound" ],
+                  [ "TheraPipeline/Matcher", "AverageSimilarity" ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Matching Performance",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 12,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "TheraPipeline/AMS", "TotalChallenges" ],
+                  [ "TheraPipeline/AMS", "TotalShortlists" ],
+                  [ "TheraPipeline/AMS", "AverageAMS" ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "AMS Metrics",
+                "period": 300
+              }
+            }
+          ]
+        }
+
+Outputs:
+  # S3 Buckets
+  RawBucketName:
+    Description: 'Name of the raw data S3 bucket'
+    Value: !Ref RawBucketResource
+    Export:
+      Name: !Sub '${Environment}-RawBucketName'
+  
+  BronzeBucketName:
+    Description: 'Name of the bronze data S3 bucket'
+    Value: !Ref BronzeBucketResource
+    Export:
+      Name: !Sub '${Environment}-BronzeBucketName'
+  
+  CuratedBucketName:
+    Description: 'Name of the curated data S3 bucket'
+    Value: !Ref CuratedBucketResource
+    Export:
+      Name: !Sub '${Environment}-CuratedBucketName'
+  
+  EmbeddingsBucketName:
+    Description: 'Name of the embeddings S3 bucket'
+    Value: !Ref EmbeddingsBucketResource
+    Export:
+      Name: !Sub '${Environment}-EmbeddingsBucketName'
+  
+  MetricsBucketName:
+    Description: 'Name of the metrics S3 bucket'
+    Value: !Ref MetricsBucketResource
+    Export:
+      Name: !Sub '${Environment}-MetricsBucketName'
+  
+  ModelBucketName:
+    Description: 'Name of the ML models S3 bucket'
+    Value: !Ref ModelBucketResource
+    Export:
+      Name: !Sub '${Environment}-ModelBucketName'
+  
+  # Athena
+  AthenaDatabaseName:
+    Description: 'Name of the Athena database'
+    Value: !Ref AthenaDatabaseResource
+    Export:
+      Name: !Sub '${Environment}-AthenaDatabaseName'
+  
+  AthenaWorkgroupName:
+    Description: 'Name of the Athena workgroup'
+    Value: !Ref AthenaWorkgroupResource
+    Export:
+      Name: !Sub '${Environment}-AthenaWorkgroupName'
+  
+  # DynamoDB
+  PublicTableName:
+    Description: 'Name of the public DynamoDB table'
+    Value: !Ref PublicTable
+    Export:
+      Name: !Sub '${Environment}-PublicTableName'
+  
+  PrivateTableName:
+    Description: 'Name of the private DynamoDB table'
+    Value: !Ref PrivateTable
+    Export:
+      Name: !Sub '${Environment}-PrivateTableName'
+  
+  # Dashboard
+  DashboardURL:
+    Description: 'URL of the CloudWatch Dashboard'
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${TheraPipelineDashboard}'
+    Export:
+      Name: !Sub '${Environment}-DashboardURL'

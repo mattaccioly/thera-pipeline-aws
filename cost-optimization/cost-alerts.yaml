@@ -1,0 +1,361 @@
+# Thera Pipeline Cost Alerts Configuration
+# This file defines CloudWatch alarms for cost monitoring
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Cost monitoring alerts for Thera Pipeline'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, staging, prod]
+    Description: Environment name
+  
+  AlertEmail:
+    Type: String
+    Description: Email address for cost alerts
+    Default: admin@example.com
+  
+  MonthlyBudgetLimit:
+    Type: Number
+    Default: 1000
+    Description: Monthly budget limit in USD
+
+Resources:
+  # SNS Topic for Cost Alerts
+  CostAlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "thera-pipeline-${Environment}-cost-alerts"
+      DisplayName: !Sub "Thera Pipeline ${Environment} Cost Alerts"
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref AlertEmail
+
+  # CloudWatch Alarms for Cost Monitoring
+  MonthlyCostAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "TheraPipeline-${Environment}-MonthlyCostAlarm"
+      AlarmDescription: "Monthly cost exceeds budget threshold"
+      MetricName: EstimatedCharges
+      Namespace: AWS/Billing
+      Statistic: Maximum
+      Period: 86400
+      EvaluationPeriods: 1
+      Threshold: !Ref MonthlyBudgetLimit
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: Currency
+          Value: USD
+      AlarmActions:
+        - !Ref CostAlertsTopic
+      OKActions:
+        - !Ref CostAlertsTopic
+
+  # Lambda Cost Alarm
+  LambdaCostAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "TheraPipeline-${Environment}-LambdaCostAlarm"
+      AlarmDescription: "Lambda costs exceed threshold"
+      MetricName: EstimatedCharges
+      Namespace: AWS/Billing
+      Statistic: Maximum
+      Period: 86400
+      EvaluationPeriods: 1
+      Threshold: 200
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ServiceName
+          Value: "Amazon Lambda"
+        - Name: Currency
+          Value: USD
+      AlarmActions:
+        - !Ref CostAlertsTopic
+      OKActions:
+        - !Ref CostAlertsTopic
+
+  # Step Functions Cost Alarm
+  StepFunctionsCostAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "TheraPipeline-${Environment}-StepFunctionsCostAlarm"
+      AlarmDescription: "Step Functions costs exceed threshold"
+      MetricName: EstimatedCharges
+      Namespace: AWS/Billing
+      Statistic: Maximum
+      Period: 86400
+      EvaluationPeriods: 1
+      Threshold: 100
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ServiceName
+          Value: "AWS Step Functions"
+        - Name: Currency
+          Value: USD
+      AlarmActions:
+        - !Ref CostAlertsTopic
+      OKActions:
+        - !Ref CostAlertsTopic
+
+  # Athena Cost Alarm
+  AthenaCostAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "TheraPipeline-${Environment}-AthenaCostAlarm"
+      AlarmDescription: "Athena costs exceed threshold"
+      MetricName: EstimatedCharges
+      Namespace: AWS/Billing
+      Statistic: Maximum
+      Period: 86400
+      EvaluationPeriods: 1
+      Threshold: 50
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ServiceName
+          Value: "Amazon Athena"
+        - Name: Currency
+          Value: USD
+      AlarmActions:
+        - !Ref CostAlertsTopic
+      OKActions:
+        - !Ref CostAlertsTopic
+
+  # S3 Cost Alarm
+  S3CostAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "TheraPipeline-${Environment}-S3CostAlarm"
+      AlarmDescription: "S3 costs exceed threshold"
+      MetricName: EstimatedCharges
+      Namespace: AWS/Billing
+      Statistic: Maximum
+      Period: 86400
+      EvaluationPeriods: 1
+      Threshold: 100
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ServiceName
+          Value: "Amazon S3"
+        - Name: Currency
+          Value: USD
+      AlarmActions:
+        - !Ref CostAlertsTopic
+      OKActions:
+        - !Ref CostAlertsTopic
+
+  # DynamoDB Cost Alarm
+  DynamoDBCostAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "TheraPipeline-${Environment}-DynamoDBCostAlarm"
+      AlarmDescription: "DynamoDB costs exceed threshold"
+      MetricName: EstimatedCharges
+      Namespace: AWS/Billing
+      Statistic: Maximum
+      Period: 86400
+      EvaluationPeriods: 1
+      Threshold: 150
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ServiceName
+          Value: "Amazon DynamoDB"
+        - Name: Currency
+          Value: USD
+      AlarmActions:
+        - !Ref CostAlertsTopic
+      OKActions:
+        - !Ref CostAlertsTopic
+
+  # Lambda Duration Alarm
+  LambdaDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "TheraPipeline-${Environment}-LambdaDurationAlarm"
+      AlarmDescription: "Lambda function duration exceeds threshold"
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 300000
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Sub "thera-pipeline-${Environment}-apollo-delta-pull"
+      AlarmActions:
+        - !Ref CostAlertsTopic
+      OKActions:
+        - !Ref CostAlertsTopic
+
+  # Lambda Error Rate Alarm
+  LambdaErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "TheraPipeline-${Environment}-LambdaErrorRateAlarm"
+      AlarmDescription: "Lambda function error rate exceeds threshold"
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Sub "thera-pipeline-${Environment}-apollo-delta-pull"
+      AlarmActions:
+        - !Ref CostAlertsTopic
+      OKActions:
+        - !Ref CostAlertsTopic
+
+  # Step Functions Execution Failure Alarm
+  StepFunctionsFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "TheraPipeline-${Environment}-StepFunctionsFailureAlarm"
+      AlarmDescription: "Step Functions execution failures exceed threshold"
+      MetricName: ExecutionsFailed
+      Namespace: AWS/States
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: StateMachineArn
+          Value: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:thera-pipeline-daily-${Environment}"
+      AlarmActions:
+        - !Ref CostAlertsTopic
+      OKActions:
+        - !Ref CostAlertsTopic
+
+  # Athena Query Failure Alarm
+  AthenaQueryFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "TheraPipeline-${Environment}-AthenaQueryFailureAlarm"
+      AlarmDescription: "Athena query failures exceed threshold"
+      MetricName: QueryExecutions
+      Namespace: AWS/Athena
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: WorkGroup
+          Value: "primary"
+      AlarmActions:
+        - !Ref CostAlertsTopic
+      OKActions:
+        - !Ref CostAlertsTopic
+
+  # DynamoDB Throttling Alarm
+  DynamoDBThrottlingAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "TheraPipeline-${Environment}-DynamoDBThrottlingAlarm"
+      AlarmDescription: "DynamoDB throttling exceeds threshold"
+      MetricName: ThrottledRequests
+      Namespace: AWS/DynamoDB
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: TableName
+          Value: !Sub "thera-companies-${Environment}"
+      AlarmActions:
+        - !Ref CostAlertsTopic
+      OKActions:
+        - !Ref CostAlertsTopic
+
+  # S3 Request Error Alarm
+  S3RequestErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "TheraPipeline-${Environment}-S3RequestErrorAlarm"
+      AlarmDescription: "S3 request errors exceed threshold"
+      MetricName: 4xxErrors
+      Namespace: AWS/S3
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: BucketName
+          Value: !Sub "thera-pipeline-${Environment}"
+        - Name: FilterId
+          Value: "EntireBucket"
+      AlarmActions:
+        - !Ref CostAlertsTopic
+      OKActions:
+        - !Ref CostAlertsTopic
+
+  # EventBridge Rule Failure Alarm
+  EventBridgeRuleFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "TheraPipeline-${Environment}-EventBridgeRuleFailureAlarm"
+      AlarmDescription: "EventBridge rule failures exceed threshold"
+      MetricName: FailedInvocations
+      Namespace: AWS/Events
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: RuleName
+          Value: !Sub "thera-pipeline-daily-${Environment}"
+      AlarmActions:
+        - !Ref CostAlertsTopic
+      OKActions:
+        - !Ref CostAlertsTopic
+
+Outputs:
+  CostAlertsTopicArn:
+    Description: ARN of the SNS topic for cost alerts
+    Value: !Ref CostAlertsTopic
+    Export:
+      Name: !Sub "${AWS::StackName}-CostAlertsTopicArn"
+
+  MonthlyCostAlarmArn:
+    Description: ARN of the monthly cost alarm
+    Value: !Ref MonthlyCostAlarm
+    Export:
+      Name: !Sub "${AWS::StackName}-MonthlyCostAlarmArn"
+
+  LambdaCostAlarmArn:
+    Description: ARN of the Lambda cost alarm
+    Value: !Ref LambdaCostAlarm
+    Export:
+      Name: !Sub "${AWS::StackName}-LambdaCostAlarmArn"
+
+  StepFunctionsCostAlarmArn:
+    Description: ARN of the Step Functions cost alarm
+    Value: !Ref StepFunctionsCostAlarm
+    Export:
+      Name: !Sub "${AWS::StackName}-StepFunctionsCostAlarmArn"
+
+  AthenaCostAlarmArn:
+    Description: ARN of the Athena cost alarm
+    Value: !Ref AthenaCostAlarm
+    Export:
+      Name: !Sub "${AWS::StackName}-AthenaCostAlarmArn"
+
+  S3CostAlarmArn:
+    Description: ARN of the S3 cost alarm
+    Value: !Ref S3CostAlarm
+    Export:
+      Name: !Sub "${AWS::StackName}-S3CostAlarmArn"
+
+  DynamoDBCostAlarmArn:
+    Description: ARN of the DynamoDB cost alarm
+    Value: !Ref DynamoDBCostAlarm
+    Export:
+      Name: !Sub "${AWS::StackName}-DynamoDBCostAlarmArn"

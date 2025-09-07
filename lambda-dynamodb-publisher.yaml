@@ -1,0 +1,321 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'DynamoDB Publisher Lambda Function for Public and Private Data Publishing'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Environment name
+  
+  PublicTableName:
+    Type: String
+    Description: Name of the public DynamoDB table (Startups)
+    Default: Startups
+  
+  PrivateTableName:
+    Type: String
+    Description: Name of the private DynamoDB table (StartupsPrivate)
+    Default: StartupsPrivate
+  
+  AthenaDatabase:
+    Type: String
+    Description: Athena database name
+    Default: thera_analytics
+  
+  AthenaWorkgroup:
+    Type: String
+    Description: Athena workgroup name
+    Default: primary
+  
+  BatchSize:
+    Type: Number
+    Default: 25
+    Description: Batch size for processing
+    MinValue: 1
+    MaxValue: 100
+
+Resources:
+  # DynamoDB Tables
+  PublicTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref PublicTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: company_key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: company_key
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: thera-pipeline
+        - Key: Component
+          Value: public-table
+
+  PrivateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref PrivateTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: company_key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: company_key
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: thera-pipeline
+        - Key: Component
+          Value: private-table
+
+  # IAM Role for Lambda
+  DynamoDBPublisherRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Environment}-dynamodb-publisher-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBPublisherPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # DynamoDB permissions
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:BatchGetItem
+                  - dynamodb:BatchWriteItem
+                Resource:
+                  - !GetAtt PublicTable.Arn
+                  - !GetAtt PrivateTable.Arn
+              
+              # Athena permissions
+              - Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:StopQueryExecution
+                  - athena:GetWorkGroup
+                Resource: '*'
+              
+              # SSM Parameter Store permissions
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:PutParameter
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/thera/dynamodb/*'
+              
+              # CloudWatch permissions
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+
+  # Lambda Function
+  DynamoDBPublisherFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${Environment}-dynamodb-publisher'
+      CodeUri: .
+      Handler: lambda-dynamodb-publisher.lambda_handler
+      Runtime: python3.12
+      Timeout: 900  # 15 minutes
+      MemorySize: 1024
+      Environment:
+        Variables:
+          PUBLIC_TABLE: !Ref PublicTableName
+          PRIVATE_TABLE: !Ref PrivateTableName
+          ATHENA_DATABASE: !Ref AthenaDatabase
+          ATHENA_WORKGROUP: !Ref AthenaWorkgroup
+          WATERMARK_PARAMETER: /thera/dynamodb/watermark
+          BATCH_SIZE: !Ref BatchSize
+          AWS_REGION: !Ref AWS::Region
+      Role: !GetAtt DynamoDBPublisherRole.Arn
+      Events:
+        # Daily trigger
+        DailyTrigger:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 16 * * ? *)  # Daily at 4 PM UTC
+            Name: !Sub '${Environment}-dynamodb-daily-trigger'
+            Description: 'Daily trigger for DynamoDB publishing'
+            Enabled: true
+      Tags:
+        Environment: !Ref Environment
+        Service: thera-pipeline
+        Component: dynamodb-publisher
+
+  # CloudWatch Log Group
+  DynamoDBPublisherLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${Environment}-dynamodb-publisher'
+      RetentionInDays: 14
+
+  # SSM Parameter for watermark
+  DynamoDBWatermarkParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /thera/dynamodb/watermark
+      Type: String
+      Value: !Sub '${AWS::StackName}-initial'
+      Description: 'Watermark timestamp for DynamoDB publishing'
+      Tags:
+        Environment: !Ref Environment
+        Service: thera-pipeline
+        Component: dynamodb-watermark
+
+  # CloudWatch Alarms
+  DynamoDBPublisherErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-dynamodb-publisher-errors'
+      AlarmDescription: 'DynamoDB Publisher Lambda errors'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref DynamoDBPublisherFunction
+      TreatMissingData: notBreaching
+
+  DynamoDBPublisherDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-dynamodb-publisher-duration'
+      AlarmDescription: 'DynamoDB Publisher Lambda duration too high'
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 600000  # 10 minutes in milliseconds
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref DynamoDBPublisherFunction
+      TreatMissingData: notBreaching
+
+  # Custom metrics for business logic
+  DynamoDBPublisherLowThroughputAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-dynamodb-publisher-low-throughput'
+      AlarmDescription: 'DynamoDB Publisher throughput is low'
+      MetricName: Upserts
+      Namespace: TheraPipeline/DynamoDBPublisher
+      Statistic: Sum
+      Period: 3600  # 1 hour
+      EvaluationPeriods: 1
+      Threshold: 10  # Less than 10 upserts per hour
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+
+  # DynamoDB capacity alarms
+  PublicTableThrottledAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-public-table-throttled'
+      AlarmDescription: 'Public table is being throttled'
+      MetricName: ThrottledRequests
+      Namespace: AWS/DynamoDB
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: TableName
+          Value: !Ref PublicTableName
+      TreatMissingData: notBreaching
+
+  PrivateTableThrottledAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-private-table-throttled'
+      AlarmDescription: 'Private table is being throttled'
+      MetricName: ThrottledRequests
+      Namespace: AWS/DynamoDB
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: TableName
+          Value: !Ref PrivateTableName
+      TreatMissingData: notBreaching
+
+Outputs:
+  DynamoDBPublisherFunctionArn:
+    Description: 'ARN of the DynamoDB Publisher Lambda function'
+    Value: !GetAtt DynamoDBPublisherFunction.Arn
+    Export:
+      Name: !Sub '${Environment}-DynamoDBPublisherFunctionArn'
+  
+  DynamoDBPublisherRoleArn:
+    Description: 'ARN of the DynamoDB Publisher IAM role'
+    Value: !GetAtt DynamoDBPublisherRole.Arn
+    Export:
+      Name: !Sub '${Environment}-DynamoDBPublisherRoleArn'
+  
+  PublicTableName:
+    Description: 'Name of the public DynamoDB table'
+    Value: !Ref PublicTable
+    Export:
+      Name: !Sub '${Environment}-PublicTableName'
+  
+  PublicTableArn:
+    Description: 'ARN of the public DynamoDB table'
+    Value: !GetAtt PublicTable.Arn
+    Export:
+      Name: !Sub '${Environment}-PublicTableArn'
+  
+  PrivateTableName:
+    Description: 'Name of the private DynamoDB table'
+    Value: !Ref PrivateTable
+    Export:
+      Name: !Sub '${Environment}-PrivateTableName'
+  
+  PrivateTableArn:
+    Description: 'ARN of the private DynamoDB table'
+    Value: !GetAtt PrivateTable.Arn
+    Export:
+      Name: !Sub '${Environment}-PrivateTableArn'

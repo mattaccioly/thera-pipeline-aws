@@ -1,0 +1,372 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Advanced Summarization Lambda Function with Cost Optimization'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Environment name
+  
+  CuratedBucket:
+    Type: String
+    Description: S3 bucket for curated data
+    Default: thera-curated-805595753342-v3
+  
+  AthenaDatabase:
+    Type: String
+    Description: Athena database name
+    Default: thera_gold
+  
+  AthenaWorkgroup:
+    Type: String
+    Description: Athena workgroup name
+    Default: primary
+  
+  DynamoDBTable:
+    Type: String
+    Description: DynamoDB table for caching
+    Default: thera-advanced-summaries
+  
+  DailyBudgetUSD:
+    Type: Number
+    Description: Daily budget for LLM processing in USD
+    Default: 50.0
+    MinValue: 1.0
+    MaxValue: 1000.0
+  
+  MaxBatchSize:
+    Type: Number
+    Description: Maximum batch size for processing
+    Default: 10
+    MinValue: 1
+    MaxValue: 50
+  
+  MaxDailyCompanies:
+    Type: Number
+    Description: Maximum companies to process per day
+    Default: 1000
+    MinValue: 10
+    MaxValue: 10000
+
+Globals:
+  Function:
+    Timeout: 900  # 15 minutes
+    MemorySize: 3008  # Maximum memory for large batches
+    Runtime: python3.12
+    Environment:
+      Variables:
+        CURATED_BUCKET: !Ref CuratedBucket
+        ATHENA_DATABASE: !Ref AthenaDatabase
+        ATHENA_WORKGROUP: !Ref AthenaWorkgroup
+        DYNAMODB_TABLE: !Ref DynamoDBTable
+        DAILY_BUDGET_USD: !Ref DailyBudgetUSD
+        MAX_BATCH_SIZE: !Ref MaxBatchSize
+        MAX_DAILY_COMPANIES: !Ref MaxDailyCompanies
+
+Resources:
+  # IAM Role for Lambda
+  AdvancedSummarizationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Environment}-advanced-summarization-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: AdvancedSummarizationPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Bedrock permissions
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource: 
+                  - 'arn:aws:bedrock:*::foundation-model/anthropic.claude-3-haiku-*'
+                  - 'arn:aws:bedrock:*::foundation-model/anthropic.claude-3-sonnet-*'
+              
+              # Athena permissions
+              - Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:StopQueryExecution
+                  - athena:GetWorkGroup
+                Resource: '*'
+              
+              # S3 permissions
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${CuratedBucket}/*'
+              
+              # DynamoDB permissions
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource:
+                  - !Sub 'arn:aws:dynamodb:*:*:table/${DynamoDBTable}'
+                  - !Sub 'arn:aws:dynamodb:*:*:table/${DynamoDBTable}/index/*'
+              
+              # CloudWatch permissions
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+              
+              # SSM permissions for cost tracking
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:PutParameter
+                Resource:
+                  - !Sub 'arn:aws:ssm:*:*:parameter/thera/llm/*'
+
+  # Lambda Function
+  AdvancedSummarizationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${Environment}-advanced-summarization'
+      CodeUri: .
+      Handler: lambda-advanced-summarization.lambda_handler
+      Role: !GetAtt AdvancedSummarizationRole.Arn
+      Environment:
+        Variables:
+          CURATED_BUCKET: !Ref CuratedBucket
+          ATHENA_DATABASE: !Ref AthenaDatabase
+          ATHENA_WORKGROUP: !Ref AthenaWorkgroup
+          DYNAMODB_TABLE: !Ref DynamoDBTable
+          DAILY_BUDGET_USD: !Ref DailyBudgetUSD
+          MAX_BATCH_SIZE: !Ref MaxBatchSize
+          MAX_DAILY_COMPANIES: !Ref MaxDailyCompanies
+      ReservedConcurrencyLimit: 2  # Limit concurrent executions for cost control
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt AdvancedSummarizationDLQ.Arn
+      Tags:
+        Environment: !Ref Environment
+        Service: AdvancedSummarization
+        CostCenter: LLM
+
+  # Dead Letter Queue
+  AdvancedSummarizationDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${Environment}-advanced-summarization-dlq'
+      MessageRetentionPeriod: 1209600  # 14 days
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: AdvancedSummarization
+
+  # DynamoDB Table for Caching
+  AdvancedSummariesCacheTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref DynamoDBTable
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: cache_key
+          AttributeType: S
+        - AttributeName: company_key
+          AttributeType: S
+        - AttributeName: created_at
+          AttributeType: N
+      KeySchema:
+        - AttributeName: cache_key
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: company-key-index
+          KeySchema:
+            - AttributeName: company_key
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: created-at-index
+          KeySchema:
+            - AttributeName: created_at
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: AdvancedSummarization
+        - Key: Purpose
+          Value: LLMCache
+
+  # CloudWatch Alarms
+  HighCostAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-advanced-summarization-high-cost'
+      AlarmDescription: 'Alert when LLM processing costs exceed threshold'
+      MetricName: TotalCost
+      Namespace: TheraPipeline/AdvancedSummarization
+      Statistic: Sum
+      Period: 3600  # 1 hour
+      EvaluationPeriods: 1
+      Threshold: !Ref DailyBudgetUSD
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref HighCostSNSAlert
+
+  ProcessingErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-advanced-summarization-errors'
+      AlarmDescription: 'Alert when processing errors occur'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref AdvancedSummarizationFunction
+      Statistic: Sum
+      Period: 300  # 5 minutes
+      EvaluationPeriods: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref ProcessingErrorSNSAlert
+
+  # SNS Topics for Alerts
+  HighCostSNSAlert:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${Environment}-advanced-summarization-high-cost'
+      DisplayName: 'Advanced Summarization High Cost Alert'
+
+  ProcessingErrorSNSAlert:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${Environment}-advanced-summarization-errors'
+      DisplayName: 'Advanced Summarization Processing Error Alert'
+
+  # CloudWatch Dashboard
+  AdvancedSummarizationDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${Environment}-AdvancedSummarization'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "TheraPipeline/AdvancedSummarization", "CompaniesProcessed" ],
+                  [ "TheraPipeline/AdvancedSummarization", "SummariesGenerated" ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Processing Volume",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "TheraPipeline/AdvancedSummarization", "TotalCost" ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Processing Cost (USD)",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/Lambda", "Duration", "FunctionName", "${AdvancedSummarizationFunction}" ],
+                  [ "AWS/Lambda", "Errors", "FunctionName", "${AdvancedSummarizationFunction}" ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Lambda Performance",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", "${DynamoDBTable}" ],
+                  [ "AWS/DynamoDB", "ConsumedWriteCapacityUnits", "TableName", "${DynamoDBTable}" ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "DynamoDB Usage",
+                "period": 300
+              }
+            }
+          ]
+        }
+
+Outputs:
+  AdvancedSummarizationFunctionArn:
+    Description: 'ARN of the Advanced Summarization Lambda function'
+    Value: !GetAtt AdvancedSummarizationFunction.Arn
+    Export:
+      Name: !Sub '${Environment}-AdvancedSummarizationFunctionArn'
+  
+  AdvancedSummarizationFunctionName:
+    Description: 'Name of the Advanced Summarization Lambda function'
+    Value: !Ref AdvancedSummarizationFunction
+    Export:
+      Name: !Sub '${Environment}-AdvancedSummarizationFunctionName'
+  
+  DynamoDBTableName:
+    Description: 'Name of the DynamoDB cache table'
+    Value: !Ref AdvancedSummarizationsCacheTable
+    Export:
+      Name: !Sub '${Environment}-AdvancedSummarizationCacheTable'
+  
+  DashboardURL:
+    Description: 'CloudWatch Dashboard URL'
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${AdvancedSummarizationDashboard}'
