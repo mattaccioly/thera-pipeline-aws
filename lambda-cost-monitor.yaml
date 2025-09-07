@@ -1,0 +1,295 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Cost Monitor Lambda Function for Advanced Summarization Pipeline'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Environment name
+  
+  DailyBudgetUSD:
+    Type: Number
+    Description: Daily budget for LLM processing in USD
+    Default: 50.0
+    MinValue: 1.0
+    MaxValue: 1000.0
+
+Globals:
+  Function:
+    Timeout: 300  # 5 minutes
+    MemorySize: 512
+    Runtime: python3.12
+    Environment:
+      Variables:
+        COST_TRACKING_TABLE: !Ref CostTrackingTable
+        ALERT_TOPIC_ARN: !Ref AlertTopic
+        DAILY_BUDGET_USD: !Ref DailyBudgetUSD
+
+Resources:
+  # IAM Role for Lambda
+  CostMonitorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Environment}-cost-monitor-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CostMonitorPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # DynamoDB permissions
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource:
+                  - !GetAtt CostTrackingTable.Arn
+                  - !GetAtt AdvancedSummariesCacheTable.Arn
+              
+              # CloudWatch permissions
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+              
+              # SNS permissions
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref AlertTopic
+              
+              # SQS permissions for DLQ
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt CostMonitorDLQ.Arn
+
+  # Lambda Function
+  CostMonitorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${Environment}-cost-monitor'
+      CodeUri: s3://thera-curated-805595753342-v3/lambda-deployments/lambda-cost-monitor.zip
+      Handler: lambda-cost-monitor.lambda_handler
+      Role: !GetAtt CostMonitorRole.Arn
+      Environment:
+        Variables:
+          COST_TRACKING_TABLE: !Ref CostTrackingTable
+          CACHE_TABLE: !Ref AdvancedSummariesCacheTable
+          ALERT_TOPIC_ARN: !Ref AlertTopic
+          DAILY_BUDGET_USD: !Ref DailyBudgetUSD
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt CostMonitorDLQ.Arn
+      Tags:
+        Environment: !Ref Environment
+        Service: CostMonitor
+        CostCenter: LLM
+
+  # Dead Letter Queue
+  CostMonitorDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${Environment}-cost-monitor-dlq'
+      MessageRetentionPeriod: 1209600  # 14 days
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: CostMonitor
+
+  # DynamoDB Table for Cost Tracking
+  CostTrackingTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${Environment}-llm-cost-tracking'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: date
+          AttributeType: S
+      KeySchema:
+        - AttributeName: date
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: CostMonitor
+        - Key: Purpose
+          Value: CostTracking
+
+  # DynamoDB Table for Cache Management
+  AdvancedSummariesCacheTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${Environment}-advanced-summaries-cache'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: cache_key
+          AttributeType: S
+        - AttributeName: company_key
+          AttributeType: S
+        - AttributeName: created_at
+          AttributeType: N
+      KeySchema:
+        - AttributeName: cache_key
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: company-key-index
+          KeySchema:
+            - AttributeName: company_key
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: created-at-index
+          KeySchema:
+            - AttributeName: created_at
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: AdvancedSummarization
+        - Key: Purpose
+          Value: LLMCache
+
+  # SNS Topic for Alerts
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${Environment}-thera-llm-alerts'
+      DisplayName: 'Thera LLM Cost and Error Alerts'
+
+  # CloudWatch Alarms
+  HighCostAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-llm-high-cost'
+      AlarmDescription: 'Alert when LLM processing costs exceed threshold'
+      MetricName: DailyCost
+      Namespace: TheraPipeline/LLMCost
+      Statistic: Sum
+      Period: 3600  # 1 hour
+      EvaluationPeriods: 1
+      Threshold: !Ref DailyBudgetUSD
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertTopic
+
+  ProcessingErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-cost-monitor-errors'
+      AlarmDescription: 'Alert when cost monitoring errors occur'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref CostMonitorFunction
+      Statistic: Sum
+      Period: 300  # 5 minutes
+      EvaluationPeriods: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertTopic
+
+  # EventBridge Rule for Daily Cost Monitoring
+  DailyCostMonitoringRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${Environment}-daily-cost-monitoring'
+      Description: 'Daily cost monitoring and cache optimization'
+      ScheduleExpression: 'cron(0 2 * * ? *)'  # Daily at 2 AM UTC
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt CostMonitorFunction.Arn
+          Id: CostMonitorTarget
+          RoleArn: !GetAtt CostMonitorExecutionRole.Arn
+
+  # IAM Role for EventBridge
+  CostMonitorExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Environment}-cost-monitor-execution-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CostMonitorExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt CostMonitorFunction.Arn
+
+  # Permission for EventBridge to invoke Lambda
+  CostMonitorInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CostMonitorFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt DailyCostMonitoringRule.Arn
+
+Outputs:
+  CostMonitorFunctionArn:
+    Description: 'ARN of the Cost Monitor Lambda function'
+    Value: !GetAtt CostMonitorFunction.Arn
+    Export:
+      Name: !Sub '${Environment}-CostMonitorFunctionArn'
+  
+  CostMonitorFunctionName:
+    Description: 'Name of the Cost Monitor Lambda function'
+    Value: !Ref CostMonitorFunction
+    Export:
+      Name: !Sub '${Environment}-CostMonitorFunctionName'
+  
+  CostTrackingTableName:
+    Description: 'Name of the cost tracking table'
+    Value: !Ref CostTrackingTable
+    Export:
+      Name: !Sub '${Environment}-CostTrackingTable'
+  
+  CacheTableName:
+    Description: 'Name of the cache table'
+    Value: !Ref AdvancedSummariesCacheTable
+    Export:
+      Name: !Sub '${Environment}-AdvancedSummariesCacheTable'
+  
+  AlertTopicArn:
+    Description: 'ARN of the SNS alert topic'
+    Value: !Ref AlertTopic
+    Export:
+      Name: !Sub '${Environment}-LLMAlertTopicArn'

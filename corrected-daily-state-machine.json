@@ -1,0 +1,148 @@
+{
+  "Comment": "Corrected Thera Pipeline Daily State Machine - us-east-2",
+  "StartAt": "ApolloDeltaPull",
+  "States": {
+    "ApolloDeltaPull": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:805595753342:function:thera-apollo-delta-pull-dev",
+      "Comment": "Step 1: Pull delta data from Apollo API",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "ApolloDeltaPullFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "FirecrawlOrchestrator",
+      "ResultPath": "$.apolloDeltaPull"
+    },
+    "ApolloDeltaPullFailure": {
+      "Type": "Fail",
+      "Comment": "Apollo Delta Pull failed",
+      "Cause": "Apollo Delta Pull step failed"
+    },
+    "FirecrawlOrchestrator": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:805595753342:function:thera-firecrawl-orchestrator-dev",
+      "Comment": "Step 2: Orchestrate Firecrawl web scraping",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "FirecrawlOrchestratorFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "Matcher",
+      "ResultPath": "$.firecrawlOrchestrator"
+    },
+    "FirecrawlOrchestratorFailure": {
+      "Type": "Fail",
+      "Comment": "Firecrawl Orchestrator failed",
+      "Cause": "Firecrawl Orchestrator step failed"
+    },
+    "Matcher": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:805595753342:function:thera-matcher-dev",
+      "Comment": "Step 3: ML-based matching and scoring",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "MatcherFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "AdvancedSummarization",
+      "ResultPath": "$.matcher"
+    },
+    "MatcherFailure": {
+      "Type": "Fail",
+      "Comment": "Matcher failed",
+      "Cause": "Matcher step failed"
+    },
+    "AdvancedSummarization": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:805595753342:function:dev-advanced-summarization",
+      "Comment": "Step 4: Generate advanced LLM-powered summaries",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "AdvancedSummarizationFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "CostMonitoring",
+      "ResultPath": "$.advancedSummarization"
+    },
+    "AdvancedSummarizationFailure": {
+      "Type": "Pass",
+      "Comment": "Advanced Summarization failed - non-critical, continue",
+      "Next": "CostMonitoring"
+    },
+    "CostMonitoring": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:805595753342:function:dev-cost-monitor",
+      "Comment": "Step 5: Monitor costs and optimize",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "CostMonitoringFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "PipelineSuccess",
+      "ResultPath": "$.costMonitoring"
+    },
+    "CostMonitoringFailure": {
+      "Type": "Pass",
+      "Comment": "Cost monitoring failed - non-critical, continue to success",
+      "Next": "PipelineSuccess"
+    },
+    "PipelineSuccess": {
+      "Type": "Succeed",
+      "Comment": "Daily pipeline completed successfully",
+      "OutputPath": "$"
+    }
+  },
+  "TimeoutSeconds": 3600,
+  "Comment": "Corrected daily pipeline with us-east-2 Lambda functions"
+}

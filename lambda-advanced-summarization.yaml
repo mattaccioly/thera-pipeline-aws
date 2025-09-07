@@ -131,6 +131,13 @@ Resources:
                   - cloudwatch:PutMetricData
                 Resource: '*'
               
+              # SQS permissions for DLQ
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt AdvancedSummarizationDLQ.Arn
+              
               # SSM permissions for cost tracking
               - Effect: Allow
                 Action:
@@ -144,8 +151,8 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub '${Environment}-advanced-summarization'
-      CodeUri: .
-      Handler: lambda-advanced-summarization.lambda_handler
+      CodeUri: s3://thera-curated-805595753342-v3/lambda-deployments/lambda-advanced-summarization-simple.zip
+      Handler: lambda-advanced-summarization-simple.lambda_handler
       Role: !GetAtt AdvancedSummarizationRole.Arn
       Environment:
         Variables:
@@ -156,7 +163,6 @@ Resources:
           DAILY_BUDGET_USD: !Ref DailyBudgetUSD
           MAX_BATCH_SIZE: !Ref MaxBatchSize
           MAX_DAILY_COMPANIES: !Ref MaxDailyCompanies
-      ReservedConcurrencyLimit: 2  # Limit concurrent executions for cost control
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt AdvancedSummarizationDLQ.Arn
@@ -177,45 +183,7 @@ Resources:
         - Key: Service
           Value: AdvancedSummarization
 
-  # DynamoDB Table for Caching
-  AdvancedSummariesCacheTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      TableName: !Ref DynamoDBTable
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions:
-        - AttributeName: cache_key
-          AttributeType: S
-        - AttributeName: company_key
-          AttributeType: S
-        - AttributeName: created_at
-          AttributeType: N
-      KeySchema:
-        - AttributeName: cache_key
-          KeyType: HASH
-      GlobalSecondaryIndexes:
-        - IndexName: company-key-index
-          KeySchema:
-            - AttributeName: company_key
-              KeyType: HASH
-          Projection:
-            ProjectionType: ALL
-        - IndexName: created-at-index
-          KeySchema:
-            - AttributeName: created_at
-              KeyType: HASH
-          Projection:
-            ProjectionType: ALL
-      TimeToLiveSpecification:
-        AttributeName: expires_at
-        Enabled: true
-      Tags:
-        - Key: Environment
-          Value: !Ref Environment
-        - Key: Service
-          Value: AdvancedSummarization
-        - Key: Purpose
-          Value: LLMCache
+  # Note: DynamoDB table will be created separately
 
   # CloudWatch Alarms
   HighCostAlarm:
@@ -363,7 +331,7 @@ Outputs:
   
   DynamoDBTableName:
     Description: 'Name of the DynamoDB cache table'
-    Value: !Ref AdvancedSummarizationsCacheTable
+    Value: !Ref DynamoDBTable
     Export:
       Name: !Sub '${Environment}-AdvancedSummarizationCacheTable'
   

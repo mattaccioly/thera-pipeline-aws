@@ -4,7 +4,7 @@
   "States": {
     "ApolloDeltaPull": {
       "Type": "Task",
-      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-apollo-delta-pull-${Environment}",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Environment}-apollo-delta-pull",
       "Comment": "Step 1: Pull delta data from Apollo API with throttling",
       "Retry": [
         {
@@ -37,7 +37,7 @@
     },
     "AthenaCTASBronzeSilver": {
       "Type": "Task",
-      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-athena-ctas-bronze-silver-${Environment}",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Environment}-athena-ctas-bronze-silver",
       "Comment": "Step 2: Transform BRONZE data to SILVER layer",
       "Retry": [
         {
@@ -70,7 +70,7 @@
     },
     "DomainHealthGate": {
       "Type": "Task",
-      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-domain-health-gate-${Environment}",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Environment}-domain-health-gate",
       "Comment": "Step 3: Validate domain health scores",
       "Retry": [
         {
@@ -103,7 +103,7 @@
     },
     "FirecrawlOrchestrator": {
       "Type": "Task",
-      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-firecrawl-orchestrator-${Environment}",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Environment}-firecrawl-orchestrator",
       "Comment": "Step 4: Orchestrate Firecrawl web scraping with concurrency control",
       "Retry": [
         {
@@ -136,7 +136,7 @@
     },
     "AthenaCTASSilverGold": {
       "Type": "Task",
-      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-athena-ctas-silver-gold-${Environment}",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Environment}-athena-ctas-silver-gold",
       "Comment": "Step 5: Transform SILVER data to GOLD layer and build startup profiles",
       "Retry": [
         {
@@ -159,7 +159,7 @@
           "ResultPath": "$.error"
         }
       ],
-      "Next": "EmbeddingsBatch",
+      "Next": "AdvancedSummarization",
       "ResultPath": "$.athenaCTASSilverGold"
     },
     "AthenaCTASSilverGoldFailure": {
@@ -167,10 +167,43 @@
       "Comment": "Athena CTAS SILVER→GOLD failed - critical for pipeline",
       "Cause": "Athena CTAS SILVER→GOLD step failed and could not be recovered"
     },
+    "AdvancedSummarization": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Environment}-advanced-summarization",
+      "Comment": "Step 6: Generate advanced LLM-powered summaries and business intelligence",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 15,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "AdvancedSummarizationFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "EmbeddingsBatch",
+      "ResultPath": "$.advancedSummarization"
+    },
+    "AdvancedSummarizationFailure": {
+      "Type": "Fail",
+      "Comment": "Advanced Summarization failed - non-critical, pipeline can continue",
+      "Cause": "Advanced Summarization step failed but pipeline can continue without it"
+    },
     "EmbeddingsBatch": {
       "Type": "Task",
-      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-embeddings-batch-${Environment}",
-      "Comment": "Step 6: Generate embeddings using Bedrock for changed profile text",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Environment}-embeddings-batch",
+      "Comment": "Step 7: Generate embeddings using Bedrock for changed profile text",
       "Retry": [
         {
           "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
@@ -202,8 +235,8 @@
     },
     "AMSComputation": {
       "Type": "Task",
-      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-ams-computation-${Environment}",
-      "Comment": "Step 7: Compute Automated Matching Scores between companies",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Environment}-ams-computation",
+      "Comment": "Step 8: Compute Automated Matching Scores between companies",
       "Retry": [
         {
           "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
@@ -235,8 +268,8 @@
     },
     "DynamoDBPublisher": {
       "Type": "Task",
-      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-dynamodb-publisher-${Environment}",
-      "Comment": "Step 8: Publish read models to DynamoDB for fast access",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Environment}-dynamodb-publisher",
+      "Comment": "Step 9: Publish read models to DynamoDB for fast access",
       "Retry": [
         {
           "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
@@ -258,7 +291,7 @@
           "ResultPath": "$.error"
         }
       ],
-      "Next": "PipelineSuccess",
+      "Next": "CostMonitoring",
       "ResultPath": "$.dynamoDBPublisher"
     },
     "DynamoDBPublisherFailure": {
@@ -266,12 +299,39 @@
       "Comment": "DynamoDB Publisher failed - critical for pipeline",
       "Cause": "DynamoDB Publisher step failed and could not be recovered"
     },
+    "CostMonitoring": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Environment}-cost-monitor",
+      "Comment": "Step 10: Monitor costs and optimize cache",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "CostMonitoringFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "PipelineSuccess",
+      "ResultPath": "$.costMonitoring"
+    },
+    "CostMonitoringFailure": {
+      "Type": "Pass",
+      "Comment": "Cost monitoring failed - non-critical, continue to success",
+      "Next": "PipelineSuccess"
+    },
     "PipelineSuccess": {
       "Type": "Succeed",
-      "Comment": "Daily pipeline completed successfully",
+      "Comment": "Daily pipeline completed successfully with advanced summarization",
       "OutputPath": "$"
     }
   },
-  "TimeoutSeconds": 7200,
-  "Comment": "Daily pipeline timeout set to 2 hours"
+  "TimeoutSeconds": 9000,
+  "Comment": "Daily pipeline timeout set to 2.5 hours to accommodate advanced summarization"
 }

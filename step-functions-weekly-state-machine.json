@@ -70,7 +70,7 @@
     },
     "MLTraining": {
       "Type": "Task",
-      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-ml-training-${Environment}",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Environment}-ml-training",
       "Comment": "Step 3: Train additional ML models (Logistic Regression and Random Forest) using scikit-learn",
       "Retry": [
         {
@@ -103,7 +103,7 @@
     },
     "EvaluationMetrics": {
       "Type": "Task",
-      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:thera-evaluation-metrics-${Environment}",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Environment}-evaluation-metrics",
       "Comment": "Step 2: Evaluate trained models and calculate AUC/PR metrics",
       "Retry": [
         {
@@ -126,7 +126,7 @@
           "ResultPath": "$.error"
         }
       ],
-      "Next": "ModelPerformanceCheck",
+      "Next": "AdvancedSummarizationWeekly",
       "ResultPath": "$.evaluationMetrics"
     },
     "EvaluationMetricsFailure": {
@@ -134,9 +134,42 @@
       "Comment": "Evaluation Metrics failed - critical for weekly pipeline",
       "Cause": "Evaluation Metrics step failed and could not be recovered"
     },
+    "AdvancedSummarizationWeekly": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Environment}-advanced-summarization",
+      "Comment": "Step 4: Generate advanced LLM-powered summaries for new companies (optional)",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 15,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "AdvancedSummarizationWeeklyFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "ModelPerformanceCheck",
+      "ResultPath": "$.advancedSummarizationWeekly"
+    },
+    "AdvancedSummarizationWeeklyFailure": {
+      "Type": "Pass",
+      "Comment": "Advanced Summarization failed - non-critical, continue to model evaluation",
+      "Next": "ModelPerformanceCheck"
+    },
     "ModelPerformanceCheck": {
       "Type": "Choice",
-      "Comment": "Step 3: Check if model performance meets minimum thresholds",
+      "Comment": "Step 5: Check if model performance meets minimum thresholds",
       "Choices": [
         {
           "Variable": "$.evaluationMetrics.model_metrics[0].auc_score",
@@ -184,6 +217,6 @@
       "OutputPath": "$"
     }
   },
-  "TimeoutSeconds": 3600,
-  "Comment": "Weekly pipeline timeout set to 1 hour"
+  "TimeoutSeconds": 5400,
+  "Comment": "Weekly pipeline timeout set to 1.5 hours to accommodate advanced summarization"
 }

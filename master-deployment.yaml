@@ -195,6 +195,105 @@ Resources:
         AthenaWorkgroup: !Ref AthenaWorkgroup
       DependsOn: MainInfrastructure
 
+  # Athena CTAS Bronze to Silver Lambda
+  AthenaCTASBronzeSilver:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.amazonaws.com/${AWS::AccountId}-${AWS::Region}-thera-pipeline/lambda-athena-ctas-bronze-silver.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        BronzeBucket: !Ref BronzeBucket
+        CuratedBucket: !Ref CuratedBucket
+        AthenaDatabase: !Ref AthenaDatabase
+        AthenaWorkgroup: !Ref AthenaWorkgroup
+      DependsOn: MainInfrastructure
+
+  # Athena CTAS Silver to Gold Lambda
+  AthenaCTASSilverGold:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.amazonaws.com/${AWS::AccountId}-${AWS::Region}-thera-pipeline/lambda-athena-ctas-silver-gold.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        CuratedBucket: !Ref CuratedBucket
+        AthenaDatabase: !Ref AthenaDatabase
+        AthenaWorkgroup: !Ref AthenaWorkgroup
+      DependsOn: MainInfrastructure
+
+  # Matcher Lambda
+  Matcher:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.amazonaws.com/${AWS::AccountId}-${AWS::Region}-thera-pipeline/lambda-matcher.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        AthenaDatabase: !Ref AthenaDatabase
+        AthenaWorkgroup: !Ref AthenaWorkgroup
+        EmbeddingsBucket: !Ref EmbeddingsBucket
+        ModelBucket: !Ref ModelBucket
+        BedrockModelId: !Ref BedrockModelId
+      DependsOn: MainInfrastructure
+
+  # Advanced Summarization Lambda
+  AdvancedSummarization:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.amazonaws.com/${AWS::AccountId}-${AWS::Region}-thera-pipeline/lambda-advanced-summarization.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        CuratedBucket: !Ref CuratedBucket
+        AthenaDatabase: !Ref AthenaDatabase
+        AthenaWorkgroup: !Ref AthenaWorkgroup
+      DependsOn: MainInfrastructure
+
+  # Cost Monitor Lambda
+  CostMonitor:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.amazonaws.com/${AWS::AccountId}-${AWS::Region}-thera-pipeline/lambda-cost-monitor.yaml'
+      Parameters:
+        Environment: !Ref Environment
+      DependsOn: MainInfrastructure
+
+  # Weekly Trainer Lambda
+  WeeklyTrainer:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.amazonaws.com/${AWS::AccountId}-${AWS::Region}-thera-pipeline/lambda-weekly-trainer.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        CuratedBucket: !Ref CuratedBucket
+        ModelBucket: !Ref ModelBucket
+        AthenaDatabase: !Ref AthenaDatabase
+        AthenaWorkgroup: !Ref AthenaWorkgroup
+      DependsOn: MainInfrastructure
+
+  # AMS Job Lambda
+  AMSJob:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.amazonaws.com/${AWS::AccountId}-${AWS::Region}-thera-pipeline/lambda-ams-job.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        CuratedBucket: !Ref CuratedBucket
+        MetricsBucket: !Ref MetricsBucket
+        AthenaDatabase: !Ref AthenaDatabase
+        AthenaWorkgroup: !Ref AthenaWorkgroup
+      DependsOn: MainInfrastructure
+
+  # Evaluation Metrics Lambda
+  EvaluationMetrics:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.amazonaws.com/${AWS::AccountId}-${AWS::Region}-thera-pipeline/lambda-evaluation-metrics.yaml'
+      Parameters:
+        Environment: !Ref Environment
+        CuratedBucket: !Ref CuratedBucket
+        ModelBucket: !Ref ModelBucket
+        AthenaDatabase: !Ref AthenaDatabase
+        AthenaWorkgroup: !Ref AthenaWorkgroup
+      DependsOn: MainInfrastructure
+
   # ML Training Lambda
   MLTraining:
     Type: AWS::CloudFormation::Stack
@@ -276,6 +375,49 @@ Outputs:
     Value: !GetAtt MLTraining.Outputs.MLTrainingFunctionArn
     Export:
       Name: !Sub '${Environment}-MLTrainingFunctionArn'
+  
+  # Additional Lambda Function ARNs
+  AthenaCTASBronzeSilverFunctionArn:
+    Description: 'ARN of the Athena CTAS Bronze to Silver Lambda function'
+    Value: !GetAtt AthenaCTASBronzeSilver.Outputs.AthenaCTASBronzeSilverFunctionArn
+    Export:
+      Name: !Sub '${Environment}-AthenaCTASBronzeSilverFunctionArn'
+  
+  AthenaCTASSilverGoldFunctionArn:
+    Description: 'ARN of the Athena CTAS Silver to Gold Lambda function'
+    Value: !GetAtt AthenaCTASSilverGold.Outputs.AthenaCTASSilverGoldFunctionArn
+    Export:
+      Name: !Sub '${Environment}-AthenaCTASSilverGoldFunctionArn'
+  
+  AdvancedSummarizationFunctionArn:
+    Description: 'ARN of the Advanced Summarization Lambda function'
+    Value: !GetAtt AdvancedSummarization.Outputs.AdvancedSummarizationFunctionArn
+    Export:
+      Name: !Sub '${Environment}-AdvancedSummarizationFunctionArn'
+  
+  CostMonitorFunctionArn:
+    Description: 'ARN of the Cost Monitor Lambda function'
+    Value: !GetAtt CostMonitor.Outputs.CostMonitorFunctionArn
+    Export:
+      Name: !Sub '${Environment}-CostMonitorFunctionArn'
+  
+  WeeklyTrainerFunctionArn:
+    Description: 'ARN of the Weekly Trainer Lambda function'
+    Value: !GetAtt WeeklyTrainer.Outputs.WeeklyTrainerFunctionArn
+    Export:
+      Name: !Sub '${Environment}-WeeklyTrainerFunctionArn'
+  
+  AMSJobFunctionArn:
+    Description: 'ARN of the AMS Job Lambda function'
+    Value: !GetAtt AMSJob.Outputs.AMSJobFunctionArn
+    Export:
+      Name: !Sub '${Environment}-AMSJobFunctionArn'
+  
+  EvaluationMetricsFunctionArn:
+    Description: 'ARN of the Evaluation Metrics Lambda function'
+    Value: !GetAtt EvaluationMetrics.Outputs.EvaluationMetricsFunctionArn
+    Export:
+      Name: !Sub '${Environment}-EvaluationMetricsFunctionArn'
   
   # Dashboard URL
   DashboardURL:
